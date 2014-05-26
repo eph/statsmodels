@@ -989,7 +989,7 @@ class VARResults(VARProcess):
         Estimated covariance matrix of model coefficients ex intercept
         """
         # drop intercept
-        return self.cov_params[self.neqs:, self.neqs:]
+        return self.cov_params[self.k_trend*self.neqs:, self.k_trend*self.neqs:]
 
     @cache_readonly
     def _cov_sigma(self):
@@ -1710,4 +1710,3 @@ if __name__ == '__main__':
     est = model.fit(maxlags=2)
     irf = est.irf()
     '''
-
