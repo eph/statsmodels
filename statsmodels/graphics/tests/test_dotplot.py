@@ -1,7 +1,8 @@
+from statsmodels.compat.testing import skipif
+
 import numpy as np
 from statsmodels.graphics.dotplots import dot_plot
 import pandas as pd
-from numpy.testing import dec
 
 # If true, the output is written to a multi-page pdf file.
 pdf_output = False
@@ -9,10 +10,8 @@ pdf_output = False
 try:
     import matplotlib.pyplot as plt
     import matplotlib
-    if matplotlib.__version__ < '1':
-        raise
     have_matplotlib = True
-except:
+except ImportError:
     have_matplotlib = False
 
 
@@ -22,7 +21,7 @@ def close_or_save(pdf, fig):
     else:
         plt.close(fig)
 
-@dec.skipif(not have_matplotlib)
+@skipif(not have_matplotlib, reason='matplotlib not available')
 def test_all():
 
     if pdf_output:
@@ -375,6 +374,28 @@ def test_all():
     ax.set_title("Dotplot with reordered lines")
     close_or_save(pdf, fig)
 
+    # Format labels
+    plt.clf()
+    points = range(20)
+    lines = ["%d::%d" % (i, 100+i) for i in range(20)]
+    fmt_left = lambda x : "lft_" + x
+    fmt_right = lambda x : "rgt_" + x
+    ax = plt.axes()
+    fig = dot_plot(points, lines=lines, ax=ax, split_names="::",
+                   fmt_left_name=fmt_left, fmt_right_name=fmt_right)
+    ax.set_title("Horizontal dotplot with name formatting")
+    close_or_save(pdf, fig)
+
+    # Right names only
+    plt.clf()
+    points = range(20)
+    lines = ["%d::%d" % (i, 100+i) for i in range(20)]
+    ax = plt.axes()
+    fig = dot_plot(points, lines=lines, ax=ax, split_names="::",
+                   show_names="right")
+    ax.set_title("Show right names only")
+    close_or_save(pdf, fig)
+
     # Dotplot with different numbers of points per line
     plt.clf()
     ax = plt.axes([0.1, 0.1, 0.75, 0.8])
@@ -398,3 +419,4 @@ def test_all():
 
     if pdf_output:
         pdf.close()
+    plt.close('all')

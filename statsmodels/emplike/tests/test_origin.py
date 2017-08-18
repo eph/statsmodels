@@ -1,3 +1,5 @@
+from __future__ import division
+
 from numpy.testing import assert_almost_equal
 from statsmodels.emplike.originregress import ELOriginRegress
 from statsmodels.datasets import cancer
@@ -9,19 +11,17 @@ class GenRes(object):
     Loads data and creates class instance ot be tested.
 
     """
-    def __init__(self):
+    @classmethod
+    def setup_class(cls):
         data = cancer.load()
-        self.res1 = ELOriginRegress(data.endog, data.exog).fit()
-        self.res2 = OriginResults()
+        cls.res1 = ELOriginRegress(data.endog, data.exog).fit()
+        cls.res2 = OriginResults()
 
 
 class TestOrigin(GenRes):
     """
     See OriginResults for details on how tests were computed
     """
-    def __init__(self):
-        super(TestOrigin, self).__init__()
-
     def test_params(self):
         assert_almost_equal(self.res1.params, self.res2.test_params, 4)
 

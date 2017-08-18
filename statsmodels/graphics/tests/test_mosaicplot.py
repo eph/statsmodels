@@ -1,11 +1,13 @@
 from __future__ import division
 from statsmodels.compat.python import iterkeys, zip, lrange, iteritems, range
+from statsmodels.compat.testing import skipif
 
 from numpy.testing import assert_, assert_raises, dec
 from numpy.testing import run_module_suite
 
 # utilities for the tests
 
+from statsmodels.compat.pandas import sort_values
 from statsmodels.compat.collections import OrderedDict
 from statsmodels.api import datasets
 
@@ -17,8 +19,8 @@ try:
 except:
     have_matplotlib = False
 
-import pandas
-pandas_old = int(pandas.__version__.split('.')[1]) < 9
+from statsmodels.compat.pandas import version as pandas_version
+pandas_old = pandas_version < '0.9'
 
 # the main drawing function
 from statsmodels.graphics.mosaicplot import mosaic
@@ -30,7 +32,8 @@ from statsmodels.graphics.mosaicplot import _normalize_split
 from statsmodels.graphics.mosaicplot import _split_rect
 
 
-@dec.skipif(not have_matplotlib or pandas_old)
+@skipif(not have_matplotlib or pandas_old,
+        reason='matplotlib not available or pandas too old')
 def test_data_conversion():
     # It will not reorder the elements
     # so the dictionary will look odd
@@ -70,8 +73,9 @@ def test_data_conversion():
 
     pylab.suptitle('testing data conversion (plot 1 of 4)')
     #pylab.show()
+    pylab.close('all')
 
-@dec.skipif(not have_matplotlib)
+@skipif(not have_matplotlib, reason='matplotlib not available')
 def test_mosaic_simple():
     # display a simple plot of 4 categories of data, splitted in four
     # levels with increasing size for each group
@@ -99,9 +103,11 @@ def test_mosaic_simple():
     mosaic(data, gap=0.05, properties=props, axes_label=False)
     pylab.suptitle('syntetic data, 4 categories (plot 2 of 4)')
     #pylab.show()
+    pylab.close('all')
 
 
-@dec.skipif(not have_matplotlib or pandas_old)
+@skipif(not have_matplotlib or pandas_old,
+        reason='matplotlib not available or pandas too old')
 def test_mosaic():
     # make the same analysis on a known dataset
 
@@ -113,7 +119,8 @@ def test_mosaic():
     # sort by the marriage quality and give meaningful name
     # [rate_marriage, age, yrs_married, children,
     # religious, educ, occupation, occupation_husb]
-    datas = datas.sort(['rate_marriage', 'religious'])
+    datas = sort_values(datas, ['rate_marriage', 'religious'])
+
     num_to_desc = {1: 'awful', 2: 'bad', 3: 'intermediate',
                       4: 'good', 5: 'wonderful'}
     datas['rate_marriage'] = datas['rate_marriage'].map(num_to_desc)
@@ -136,8 +143,9 @@ def test_mosaic():
                 title='inter-dependence', axes_label=False)
     pylab.suptitle("extramarital affairs (plot 3 of 4)")
     #pylab.show()
+    pylab.close('all')
 
-@dec.skipif(not have_matplotlib)
+@skipif(not have_matplotlib, reason='matplotlib not available')
 def test_mosaic_very_complex():
     # make a scattermatrix of mosaic plots to show the correlations between
     # each pair of variable in a dataset. Could be easily converted into a
@@ -177,8 +185,9 @@ def test_mosaic_very_complex():
                        properties=props, gap=0.05, horizontal=i > j)
     pylab.suptitle('old males should look bright red,  (plot 4 of 4)')
     #pylab.show()
+    pylab.close('all')
 
-@dec.skipif(not have_matplotlib)
+@skipif(not have_matplotlib, reason='matplotlib not available')
 def test_axes_labeling():
     from numpy.random import rand
     key_set = (['male', 'female'], ['old', 'adult', 'young'],
@@ -195,6 +204,31 @@ def test_axes_labeling():
     #fig.tight_layout()
     fig.suptitle("correct alignment of the axes labels")
     #pylab.show()
+    pylab.close('all')
+
+@skipif(not have_matplotlib or pandas_old,
+        reason='matplotlib not available or pandas too old')
+def test_mosaic_empty_cells():
+    # SMOKE test  see #2286
+    import pandas as pd
+    mydata = pd.DataFrame({'id2': {64: 'Angelica',
+                                   65: 'DXW_UID', 66: 'casuid01',
+                                   67: 'casuid01', 68: 'EC93_uid',
+                                   69: 'EC93_uid', 70: 'EC93_uid',
+                                   60: 'DXW_UID',  61: 'AtmosFox',
+                                   62: 'DXW_UID', 63: 'DXW_UID'},
+                           'id1': {64: 'TGP',
+                                   65: 'Retention01', 66: 'default',
+                                   67: 'default', 68: 'Musa_EC_9_3',
+                                   69: 'Musa_EC_9_3', 70: 'Musa_EC_9_3',
+                                   60: 'default', 61: 'default',
+                                   62: 'default', 63: 'default'}})
+
+    ct = pd.crosstab(mydata.id1, mydata.id2)
+    fig, vals = mosaic(ct.T.unstack())
+    pylab.close('all')
+    fig, vals = mosaic(mydata, ['id1','id2'])
+    pylab.close('all')
 
 
 eq = lambda x, y: assert_(np.allclose(x, y))
@@ -398,6 +432,20 @@ def test_gap_split():
     h_2split = [(0.0, 0.0, 1 / 6, 1.0), (0.5 + 1 / 6, 0.0, 1 / 3, 1.0)]
     conf_h = dict(proportion=[1, 2], gap=1.0, horizontal=True)
     eq(_split_rect(*pure_square, **conf_h), h_2split)
+
+
+@skipif(not have_matplotlib or pandas_old,
+        reason='matplotlib not available or pandas too old')
+def test_default_arg_index():
+    # 2116
+    import pandas as pd
+    df = pd.DataFrame({'size' : ['small', 'large', 'large', 'small', 'large',
+                                 'small'],
+                       'length' : ['long', 'short', 'short', 'long', 'long',
+                                   'short']})
+    assert_raises(ValueError, mosaic, data=df, title='foobar')
+    pylab.close('all')
+
 
 if __name__ == '__main__':
     run_module_suite()

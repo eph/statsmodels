@@ -39,7 +39,7 @@ def summary(self, yname=None, xname=None, title=0, alpha=.05,
 
     Returns
     -------
-    Defualt :
+    Default :
     returns='print'
             Prints the summarirized results
 
@@ -85,7 +85,7 @@ def summary(self, yname=None, xname=None, title=0, alpha=.05,
     model_types = {'OLS' : 'Ordinary least squares',
                    'GLS' : 'Generalized least squares',
                    'GLSAR' : 'Generalized least squares with AR(p)',
-                   'WLS' : 'Weigthed least squares',
+                   'WLS' : 'Weighted least squares',
                    'RLM' : 'Robust linear model',
                    'GLM' : 'Generalized linear model'
                    }
@@ -450,13 +450,12 @@ def summary_params(results, yname=None, xname=None, alpha=.05, use_t=True,
 
     #Dictionary to store the header names for the parameter part of the
     #summary table. look up by modeltype
-    alp = str((1-alpha)*100)+'%'
     if use_t:
         param_header = ['coef', 'std err', 't', 'P>|t|',
-                        '[' + alp + ' Conf. Int.]']
+                        '[' + str(alpha/2), str(1-alpha/2) + ']']
     else:
         param_header = ['coef', 'std err', 'z', 'P>|z|',
-                        '[' + alp + ' Conf. Int.]']
+                        '[' + str(alpha/2), str(1-alpha/2) + ']']
 
     if skip_header:
         param_header = None
@@ -468,35 +467,12 @@ def summary_params(results, yname=None, xname=None, alpha=.05, use_t=True,
 
     exog_idx = lrange(len(xname))
 
-    #center confidence intervals if they are unequal lengths
-#    confint = ["(%#6.3g, %#6.3g)" % tuple(conf_int[i]) for i in \
-#                                                             exog_idx]
-    confint = ["%s %s" % tuple(lmap(forg, conf_int[i])) for i in \
-                                                             exog_idx]
-    len_ci = lmap(len, confint)
-    max_ci = max(len_ci)
-    min_ci = min(len_ci)
-
-    if min_ci < max_ci:
-        confint = [ci.center(max_ci) for ci in confint]
-
-    #explicit f/g formatting, now uses forg, f or g depending on values
-#    params_data = lzip(["%#6.4g" % (params[i]) for i in exog_idx],
-#                       ["%#6.4f" % (std_err[i]) for i in exog_idx],
-#                       ["%#6.3f" % (tvalues[i]) for i in exog_idx],
-#                       ["%#6.3f" % (pvalues[i]) for i in exog_idx],
-#                       confint
-##                       ["(%#6.3g, %#6.3g)" % tuple(conf_int[i]) for i in \
-##                                                             exog_idx]
-#                      )
-
     params_data = lzip([forg(params[i], prec=4) for i in exog_idx],
                        [forg(std_err[i]) for i in exog_idx],
                        [forg(tvalues[i]) for i in exog_idx],
                        ["%#6.3f" % (pvalues[i]) for i in exog_idx],
-                       confint
-#                       ["(%#6.3g, %#6.3g)" % tuple(conf_int[i]) for i in \
-#                                                             exog_idx]
+                       [forg(conf_int[i,0]) for i in exog_idx],
+                       [forg(conf_int[i,1]) for i in exog_idx]
                       )
     parameter_table = SimpleTable(params_data,
                                   param_header,
@@ -801,17 +777,14 @@ class Summary(object):
     '''class to hold tables for result summary presentation
 
     Construction does not take any parameters. Tables and text can be added
-    with the add_... methods.
+    with the `add_` methods.
 
     Attributes
     ----------
     tables : list of tables
-        Contains the list of SimpleTable instances, horizontally concatenated
-        tables are not saved separately.
+        Contains the list of SimpleTable instances, horizontally concatenated tables are not saved separately.
     extra_txt : string
-        extra lines that are added to the text output, used for warnings and
-        explanations.
-
+        extra lines that are added to the text output, used for warnings and explanations.
     '''
     def __init__(self):
         self.tables = []
@@ -839,7 +812,6 @@ class Summary(object):
             instance
         title : string or None
             if None, then a default title is used.
-            ?how did I do no title?
         gleft : list of tuples
             elements for the left table, tuples are (name, value) pairs
             If gleft is None, then a default table is created
@@ -902,7 +874,7 @@ class Summary(object):
 
         Parameters
         ----------
-        etext : string
+        etext : list[str]
             string with lines that are added to the text output.
 
         '''
@@ -937,7 +909,10 @@ class Summary(object):
         tables.
 
         '''
-        return summary_return(self.tables, return_fmt='latex')
+        latex = summary_return(self.tables, return_fmt='latex')
+        if not self.extra_txt is None:
+            latex = latex + '\n\n' + self.extra_txt.replace('\n', ' \\newline\n ')
+        return latex
 
     def as_csv(self):
         '''return tables as string
@@ -948,7 +923,10 @@ class Summary(object):
             concatenated summary tables in comma delimited format
 
         '''
-        return summary_return(self.tables, return_fmt='csv')
+        csv = summary_return(self.tables, return_fmt='csv')
+        if not self.extra_txt is None:
+            csv = csv + '\n\n' + self.extra_txt
+        return csv
 
     def as_html(self):
         '''return tables as string
@@ -959,7 +937,10 @@ class Summary(object):
             concatenated summary tables in HTML format
 
         '''
-        return summary_return(self.tables, return_fmt='html')
+        html = summary_return(self.tables, return_fmt='html')
+        if not self.extra_txt is None:
+            html = html + '<br/><br/>' + self.extra_txt.replace('\n', '<br/>')
+        return html
 
 
 if __name__ == "__main__":

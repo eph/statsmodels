@@ -1,18 +1,19 @@
 """
 Miscellaneous utility code for VAR estimation
 """
-from statsmodels.compat.python import range, string_types, asbytes
+from __future__ import division
+
+from statsmodels.compat.python import range, string_types, asbytes, long
+from statsmodels.compat.pandas import frequencies
 import numpy as np
 import scipy.stats as stats
-import scipy.linalg as L
 import scipy.linalg.decomp as decomp
 
 import statsmodels.tsa.tsatools as tsa
-from scipy.linalg import cholesky
 
 #-------------------------------------------------------------------------------
 # Auxiliary functions for estimation
-def get_var_endog(y, lags, trend='c'):
+def get_var_endog(y, lags, trend='c', has_constant='skip'):
     """
     Make predictor matrix for VAR(p) process
 
@@ -20,6 +21,8 @@ def get_var_endog(y, lags, trend='c'):
     Z_t = [1 y_t y_{t-1} ... y_{t - p + 1}] (Kp x 1)
 
     Ref: Lutkepohl p.70 (transposed)
+
+    has_constant can be 'raise', 'add', or 'skip'. See add_constant.
     """
     nobs = len(y)
     # Ravel C order, need to put in descending order
@@ -27,7 +30,8 @@ def get_var_endog(y, lags, trend='c'):
 
     # Add constant, trend, etc.
     if trend != 'nc':
-        Z = tsa.add_trend(Z, prepend=True, trend=trend)
+        Z = tsa.add_trend(Z, prepend=True, trend=trend,
+                          has_constant=has_constant)
 
     return Z
 
@@ -43,18 +47,18 @@ def get_trendorder(trend='c'):
         trendorder = 3
     return trendorder
 
-def make_lag_names(names, lag_order, trendorder=1):
+def make_lag_names(names, lag_order, trendorder=1, exog=None):
     """
     Produce list of lag-variable names. Constant / trends go at the beginning
 
-    Example
-    -------
+    Examples
+    --------
     >>> make_lag_names(['foo', 'bar'], 2, 1)
     ['const', 'L1.foo', 'L1.bar', 'L2.foo', 'L2.bar']
 
     """
     lag_names = []
-    if isinstance(names, string_types):     
+    if isinstance(names, string_types):
         names = [names]
 
     # take care of lagged endogenous names
@@ -68,10 +72,12 @@ def make_lag_names(names, lag_order, trendorder=1):
     if trendorder != 0:
         lag_names.insert(0, 'const')
     if trendorder > 1:
-        lag_names.insert(0, 'trend')
+        lag_names.insert(1, 'trend')
     if trendorder > 2:
-        lag_names.insert(0, 'trend**2')
-
+        lag_names.insert(2, 'trend**2')
+    if exog is not None:
+        for i in range(exog.shape[1]):
+            lag_names.insert(trendorder + i, "exog" + str(i))
     return lag_names
 
 def comp_matrix(coefs):
@@ -111,11 +117,11 @@ def parse_lutkepohl_data(path): # pragma: no cover
     from collections import deque
     from datetime import datetime
     import pandas
-    import pandas.core.datetools as dt
     import re
 
     regex = re.compile(asbytes('<(.*) (\w)([\d]+)>.*'))
-    lines = deque(open(path, 'rb'))
+    with open(path, 'rb') as f:
+        lines = deque(f)
 
     to_skip = 0
     while asbytes('*/') not in lines.popleft():
@@ -139,9 +145,9 @@ def parse_lutkepohl_data(path): # pragma: no cover
     year = int(year)
 
     offsets = {
-        asbytes('Q') : dt.BQuarterEnd(),
-        asbytes('M') : dt.BMonthEnd(),
-        asbytes('A') : dt.BYearEnd()
+        asbytes('Q') : frequencies.BQuarterEnd(),
+        asbytes('M') : frequencies.BMonthEnd(),
+        asbytes('A') : frequencies.BYearEnd()
     }
 
     # create an instance
@@ -156,18 +162,18 @@ def parse_lutkepohl_data(path): # pragma: no cover
 
     return data, date_range
 
+
 def get_logdet(m):
-    from numpy.linalg import slogdet
-    logdet = slogdet(m)
+    from statsmodels.tools.linalg import logdet_symm
+    return logdet_symm(m)
 
-    if logdet[0] == -1: # pragma: no cover
-        raise ValueError("Matrix is not positive definite")
-    elif logdet[0] == 0: # pragma: no cover
-        raise ValueError("Matrix is singular")
-    else:
-        logdet = logdet[1]
 
-    return logdet
+get_logdet = np.deprecate(get_logdet,
+                          "statsmodels.tsa.vector_ar.util.get_logdet",
+                          "statsmodels.tools.linalg.logdet_symm",
+                          "get_logdet is deprecated and will be removed in "
+                          "0.8.0")
+
 
 def norm_signif_level(alpha=0.05):
     return stats.norm.ppf(1 - alpha / 2)
@@ -184,13 +190,15 @@ def varsim(coefs, intercept, sig_u, steps=100, initvalues=None, seed=None):
     Simulate simple VAR(p) process with known coefficients, intercept, white
     noise covariance, etc.
     """
-    if seed is not None:
-        np.random.seed(seed=seed)
-    from numpy.random import multivariate_normal as rmvnorm
+    rs = np.random.RandomState(seed=seed)
+    rmvnorm = rs.multivariate_normal
     p, k, k = coefs.shape
     ugen = rmvnorm(np.zeros(len(sig_u)), sig_u, steps)
     result = np.zeros((steps, k))
-    result[p:] = intercept + ugen[p:]
+    if intercept is not None:
+        result[p:] = intercept + ugen[p:]
+    else:
+        result[p:] = ugen[p:]
 
     # add in AR terms
     for t in range(p, steps):
@@ -204,7 +212,7 @@ def get_index(lst, name):
     try:
         result = lst.index(name)
     except Exception:
-        if not isinstance(name, int):
+        if not isinstance(name, (int, long)):
             raise
         result = name
     return result
@@ -240,3 +248,39 @@ def vech(A):
     vechvec=np.asarray(vechvec)
     return vechvec
 
+
+def seasonal_dummies(n_seasons, len_endog, first_period=0, centered=False):
+    """
+
+    Parameters
+    ----------
+    n_seasons : int >= 0
+        Number of seasons (e.g. 12 for monthly data and 4 for quarterly data).
+    len_endog : int >= 0
+        Total number of observations.
+    first_period : int, default: 0
+        Season of the first observation. As an example, suppose we have monthly
+        data and the first observation is in March (third month of the year).
+        In this case we pass 2 as first_period. (0 for the first season,
+        1 for the second, ..., n_seasons-1 for the last season).
+        An integer greater than n_seasons-1 are treated in the same way as the
+        integer modulo n_seasons.
+    centered : bool, default: False
+        If True, center (demean) the dummy variables. That is useful in order
+        to get seasonal dummies that are orthogonal to the vector of constant
+        dummy variables (a vector of ones).
+
+    Returns
+    -------
+    seasonal_dummies : ndarray (len_endog x n_seasons-1)
+    """
+    if n_seasons == 0:
+        return np.empty((len_endog, 0))
+    if n_seasons > 0:
+        season_exog = np.zeros((len_endog, n_seasons - 1))
+        for i in range(n_seasons - 1):
+            season_exog[(i-first_period) % n_seasons::n_seasons, i] = 1
+
+        if centered:
+            season_exog -= 1 / n_seasons
+        return season_exog

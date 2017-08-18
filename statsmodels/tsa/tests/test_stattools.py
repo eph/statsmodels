@@ -1,17 +1,20 @@
+from statsmodels.compat.numpy import recarray_select
+
 from statsmodels.compat.python import lrange
+from statsmodels.tools.sm_exceptions import ColinearityWarning
 from statsmodels.tsa.stattools import (adfuller, acf, pacf_ols, pacf_yw,
                                                pacf, grangercausalitytests,
-                                               coint, acovf,
+                                               coint, acovf, kpss, ResultsStore,
                                                arma_order_select_ic)
-from statsmodels.tsa.base.datetools import dates_from_range
 import numpy as np
-from numpy.testing import (assert_almost_equal, assert_equal, assert_raises,
-                           dec, assert_)
-from numpy import genfromtxt#, concatenate
+from numpy.testing import (assert_almost_equal, assert_equal, assert_warns,
+                           assert_raises, dec, assert_, assert_allclose)
+from numpy import genfromtxt
 from statsmodels.datasets import macrodata, sunspots
-from pandas import Series, Index, DataFrame
+from pandas import Series, DatetimeIndex, DataFrame
 import os
-
+import warnings
+from statsmodels.tools.sm_exceptions import MissingDataError
 
 DECIMAL_8 = 8
 DECIMAL_6 = 6
@@ -46,22 +49,24 @@ class TestADFConstant(CheckADF):
     """
     Dickey-Fuller test for unit root
     """
-    def __init__(self):
-        self.res1 = adfuller(self.x, regression="c", autolag=None,
+    @classmethod
+    def setup_class(cls):
+        cls.res1 = adfuller(cls.x, regression="c", autolag=None,
                 maxlag=4)
-        self.teststat = .97505319
-        self.pvalue = .99399563
-        self.critvalues = [-3.476, -2.883, -2.573]
+        cls.teststat = .97505319
+        cls.pvalue = .99399563
+        cls.critvalues = [-3.476, -2.883, -2.573]
 
 class TestADFConstantTrend(CheckADF):
     """
     """
-    def __init__(self):
-        self.res1 = adfuller(self.x, regression="ct", autolag=None,
+    @classmethod
+    def setup_class(cls):
+        cls.res1 = adfuller(cls.x, regression="ct", autolag=None,
                 maxlag=4)
-        self.teststat = -1.8566374
-        self.pvalue = .67682968
-        self.critvalues = [-4.007, -3.437, -3.137]
+        cls.teststat = -1.8566374
+        cls.pvalue = .67682968
+        cls.critvalues = [-4.007, -3.437, -3.137]
 
 #class TestADFConstantTrendSquared(CheckADF):
 #    """
@@ -72,41 +77,50 @@ class TestADFConstantTrend(CheckADF):
 class TestADFNoConstant(CheckADF):
     """
     """
-    def __init__(self):
-        self.res1 = adfuller(self.x, regression="nc", autolag=None,
+    @classmethod
+    def setup_class(cls):
+        cls.res1 = adfuller(cls.x, regression="nc", autolag=None,
                 maxlag=4)
-        self.teststat = 3.5227498
-        self.pvalue = .99999 # Stata does not return a p-value for noconstant.
+        cls.teststat = 3.5227498
+        cls.pvalue = .99999 # Stata does not return a p-value for noconstant.
                         # Tau^max in MacKinnon (1994) is missing, so it is
                         # assumed that its right-tail is well-behaved
-        self.critvalues = [-2.587, -1.950, -1.617]
+        cls.critvalues = [-2.587, -1.950, -1.617]
 
 # No Unit Root
 
 class TestADFConstant2(CheckADF):
-    def __init__(self):
-        self.res1 = adfuller(self.y, regression="c", autolag=None,
+    @classmethod
+    def setup_class(cls):
+        cls.res1 = adfuller(cls.y, regression="c", autolag=None,
                 maxlag=1)
-        self.teststat = -4.3346988
-        self.pvalue = .00038661
-        self.critvalues = [-3.476, -2.883, -2.573]
+        cls.teststat = -4.3346988
+        cls.pvalue = .00038661
+        cls.critvalues = [-3.476, -2.883, -2.573]
 
 class TestADFConstantTrend2(CheckADF):
-    def __init__(self):
-        self.res1 = adfuller(self.y, regression="ct", autolag=None,
+    @classmethod
+    def setup_class(cls):
+        cls.res1 = adfuller(cls.y, regression="ct", autolag=None,
                 maxlag=1)
-        self.teststat = -4.425093
-        self.pvalue = .00199633
-        self.critvalues = [-4.006, -3.437, -3.137]
+        cls.teststat = -4.425093
+        cls.pvalue = .00199633
+        cls.critvalues = [-4.006, -3.437, -3.137]
 
 class TestADFNoConstant2(CheckADF):
-    def __init__(self):
-        self.res1 = adfuller(self.y, regression="nc", autolag=None,
+    @classmethod
+    def setup_class(cls):
+        cls.res1 = adfuller(cls.y, regression="nc", autolag=None,
                 maxlag=1)
-        self.teststat = -2.4511596
-        self.pvalue = 0.013747 # Stata does not return a p-value for noconstant
+        cls.teststat = -2.4511596
+        cls.pvalue = 0.013747 # Stata does not return a p-value for noconstant
                                # this value is just taken from our results
-        self.critvalues = [-2.587,-1.950,-1.617]
+        cls.critvalues = [-2.587,-1.950,-1.617]
+        _, _1, _2, cls.store = adfuller(cls.y, regression="nc", autolag=None,
+                                         maxlag=1, store=True)
+
+    def test_store_str(self):
+        assert_equal(self.store.__str__(), 'Augmented Dickey-Fuller Test Results')
 
 class CheckCorrGram(object):
     """
@@ -126,14 +140,14 @@ class TestACF(CheckCorrGram):
     """
     Test Autocorrelation Function
     """
-    def __init__(self):
-        self.acf = self.results['acvar']
-        #self.acf = np.concatenate(([1.], self.acf))
-        self.qstat = self.results['Q1']
-        self.res1 = acf(self.x, nlags=40, qstat=True, alpha=.05)
-        self.confint_res = self.results[['acvar_lb','acvar_ub']].view((float,
+    @classmethod
+    def setup_class(cls):
+        cls.acf = cls.results['acvar']
+        #cls.acf = np.concatenate(([1.], cls.acf))
+        cls.qstat = cls.results['Q1']
+        cls.res1 = acf(cls.x, nlags=40, qstat=True, alpha=.05)
+        cls.confint_res = cls.results[['acvar_lb','acvar_ub']].view((float,
                                                                             2))
-
     def test_acf(self):
         assert_almost_equal(self.res1[0][1:41], self.acf, DECIMAL_8)
 
@@ -151,13 +165,12 @@ class TestACF(CheckCorrGram):
 
 
 class TestACF_FFT(CheckCorrGram):
-    """
-    Test Autocorrelation Function using FFT
-    """
-    def __init__(self):
-        self.acf = self.results['acvarfft']
-        self.qstat = self.results['Q1']
-        self.res1 = acf(self.x, nlags=40, qstat=True, fft=True)
+    # Test Autocorrelation Function using FFT
+    @classmethod
+    def setup_class(cls):
+        cls.acf = cls.results['acvarfft']
+        cls.qstat = cls.results['Q1']
+        cls.res1 = acf(cls.x, nlags=40, qstat=True, fft=True)
 
     def test_acf(self):
         assert_almost_equal(self.res1[0][1:], self.acf, DECIMAL_8)
@@ -166,11 +179,51 @@ class TestACF_FFT(CheckCorrGram):
         #todo why is res1/qstat 1 short
         assert_almost_equal(self.res1[1], self.qstat, DECIMAL_3)
 
+class TestACFMissing(CheckCorrGram):
+    # Test Autocorrelation Function using Missing
+    @classmethod
+    def setup_class(cls):
+        cls.x = np.concatenate((np.array([np.nan]),cls.x))
+        cls.acf = cls.results['acvar'] # drop and conservative
+        cls.qstat = cls.results['Q1']
+        cls.res_drop = acf(cls.x, nlags=40, qstat=True, alpha=.05,
+                            missing='drop')
+        cls.res_conservative = acf(cls.x, nlags=40, qstat=True, alpha=.05,
+                                    missing='conservative')
+        cls.acf_none = np.empty(40) * np.nan # lags 1 to 40 inclusive
+        cls.qstat_none = np.empty(40) * np.nan
+        cls.res_none = acf(cls.x, nlags=40, qstat=True, alpha=.05,
+                        missing='none')
+
+    def test_raise(self):
+        assert_raises(MissingDataError, acf, self.x, nlags=40,
+                      qstat=True, alpha=.05, missing='raise')
+
+    def test_acf_none(self):
+        assert_almost_equal(self.res_none[0][1:41], self.acf_none, DECIMAL_8)
+
+    def test_acf_drop(self):
+        assert_almost_equal(self.res_drop[0][1:41], self.acf, DECIMAL_8)
+
+    def test_acf_conservative(self):
+        assert_almost_equal(self.res_conservative[0][1:41], self.acf,
+                            DECIMAL_8)
+
+    def test_qstat_none(self):
+        #todo why is res1/qstat 1 short
+        assert_almost_equal(self.res_none[2], self.qstat_none, DECIMAL_3)
+
+# how to do this test? the correct q_stat depends on whether nobs=len(x) is
+# used when x contains NaNs or whether nobs<len(x) when x contains NaNs
+#    def test_qstat_drop(self):
+#        assert_almost_equal(self.res_drop[2][:40], self.qstat, DECIMAL_3)
+
 
 class TestPACF(CheckCorrGram):
-    def __init__(self):
-        self.pacfols = self.results['PACOLS']
-        self.pacfyw = self.results['PACYW']
+    @classmethod
+    def setup_class(cls):
+        cls.pacfols = cls.results['PACOLS']
+        cls.pacfyw = cls.results['PACYW']
 
     def test_ols(self):
         pacfols, confint = pacf(self.x, nlags=40, alpha=.05, method="ols")
@@ -179,6 +232,10 @@ class TestPACF(CheckCorrGram):
         # from edited Stata ado file
         res = [[-.1375625, .1375625]] * 40
         assert_almost_equal(centered[1:41], res, DECIMAL_6)
+        # check lag 0
+        assert_equal(centered[0], [0., 0.])
+        assert_equal(confint[0], [1, 1])
+        assert_equal(pacfols[0], 1)
 
 
     def test_yw(self):
@@ -208,13 +265,116 @@ class CheckCoint(object):
     def test_tstat(self):
         assert_almost_equal(self.coint_t,self.teststat, DECIMAL_4)
 
+# this doesn't produce the old results anymore
 class TestCoint_t(CheckCoint):
     """
     Get AR(1) parameter on residuals
     """
-    def __init__(self):
-        self.coint_t = coint(self.y1, self.y2, regression ="c")[0]
-        self.teststat = -1.8208817
+    @classmethod
+    def setup_class(cls):
+        #cls.coint_t = coint(cls.y1, cls.y2, trend="c")[0]
+        cls.coint_t = coint(cls.y1, cls.y2, trend="c", maxlag=0, autolag=None)[0]
+        cls.teststat = -1.8208817
+        cls.teststat = -1.830170986148
+
+
+def test_coint():
+    nobs = 200
+    scale_e = 1
+    const = [1, 0, 0.5, 0]
+    np.random.seed(123)
+    unit = np.random.randn(nobs).cumsum()
+    y = scale_e * np.random.randn(nobs, 4)
+    y[:, :2] += unit[:, None]
+    y += const
+    y = np.round(y, 4)
+
+    for trend in []:#['c', 'ct', 'ctt', 'nc']:
+        print('\n', trend)
+        print(coint(y[:, 0], y[:, 1], trend=trend, maxlag=4, autolag=None))
+        print(coint(y[:, 0], y[:, 1:3], trend=trend, maxlag=4, autolag=None))
+        print(coint(y[:, 0], y[:, 2:], trend=trend, maxlag=4, autolag=None))
+        print(coint(y[:, 0], y[:, 1:], trend=trend, maxlag=4, autolag=None))
+
+    # results from Stata egranger
+    res_egranger = {}
+    # trend = 'ct'
+    res = res_egranger['ct'] = {}
+    res[0]  = [-5.615251442239, -4.406102369132,  -3.82866685109, -3.532082997903]
+    res[1]  = [-5.63591313706, -4.758609717199, -4.179130554708, -3.880909696863]
+    res[2]  = [-2.892029275027, -4.758609717199, -4.179130554708, -3.880909696863]
+    res[3]  = [-5.626932544079,  -5.08363327039, -4.502469783057,   -4.2031051091]
+
+    # trend = 'c'
+    res = res_egranger['c'] = {}
+    # first critical value res[0][1] has a discrepancy starting at 4th decimal
+    res[0]  = [-5.760696844656, -3.952043522638, -3.367006313729, -3.065831247948]
+    # manually adjusted to have higher precision as in other cases
+    res[0][1] = -3.952321293401682
+    res[1]  = [-5.781087068772, -4.367111915942, -3.783961136005, -3.483501524709]
+    res[2]  = [-2.477444137366, -4.367111915942, -3.783961136005, -3.483501524709]
+    res[3]  = [-5.778205811661, -4.735249216434, -4.152738973763, -3.852480848968]
+
+    # trend = 'ctt'
+    res = res_egranger['ctt'] = {}
+    res[0]  = [-5.644431269946, -4.796038299708, -4.221469431008, -3.926472577178]
+    res[1]  = [-5.665691609506, -5.111158174219,  -4.53317278104,  -4.23601008516]
+    res[2]  = [-3.161462374828, -5.111158174219,  -4.53317278104,  -4.23601008516]
+    res[3]  = [-5.657904558563, -5.406880189412, -4.826111619543, -4.527090164875]
+
+    # The following for 'nc' are only regression test numbers
+    # trend = 'nc' not allowed in egranger
+    # trend = 'nc'
+    res = res_egranger['nc'] = {}
+    nan = np.nan  # shortcut for table
+    res[0]  = [-3.7146175989071137, nan, nan, nan]
+    res[1]  = [-3.8199323012888384, nan, nan, nan]
+    res[2]  = [-1.6865000791270679, nan, nan, nan]
+    res[3]  = [-3.7991270451873675, nan, nan, nan]
+
+    for trend in ['c', 'ct', 'ctt', 'nc']:
+        res1 = {}
+        res1[0] = coint(y[:, 0], y[:, 1], trend=trend, maxlag=4, autolag=None)
+        res1[1] = coint(y[:, 0], y[:, 1:3], trend=trend, maxlag=4,
+                        autolag=None)
+        res1[2] = coint(y[:, 0], y[:, 2:], trend=trend, maxlag=4, autolag=None)
+        res1[3] = coint(y[:, 0], y[:, 1:], trend=trend, maxlag=4, autolag=None)
+
+        for i in range(4):
+            res = res_egranger[trend]
+
+            assert_allclose(res1[i][0], res[i][0], rtol=1e-11)
+            r2 = res[i][1:]
+            r1 = res1[i][2]
+            assert_allclose(r1, r2, rtol=0, atol=6e-7)
+
+
+def test_coint_identical_series():
+    nobs = 200
+    scale_e = 1
+    np.random.seed(123)
+    y = scale_e * np.random.randn(nobs)
+    warnings.simplefilter('always', ColinearityWarning)
+    with warnings.catch_warnings(record=True) as w:
+        c = coint(y, y, trend="c", maxlag=0, autolag=None)
+    assert_equal(len(w), 1)
+    assert_equal(c[0], 0.0)
+    # Limit of table
+    assert_(c[1] > .98)
+
+
+def test_coint_perfect_collinearity():
+    nobs = 200
+    scale_e = 1
+    np.random.seed(123)
+    x = scale_e * np.random.randn(nobs, 2)
+    y = 1 + x.sum(axis=1)
+    warnings.simplefilter('always', ColinearityWarning)
+    with warnings.catch_warnings(record=True) as w:
+        c = coint(y, x, trend="c", maxlag=0, autolag=None)
+    assert_equal(c[0], 0.0)
+    # Limit of table
+    assert_(c[1] > .98)
 
 
 class TestGrangerCausality(object):
@@ -222,7 +382,7 @@ class TestGrangerCausality(object):
     def test_grangercausality(self):
         # some example data
         mdata = macrodata.load().data
-        mdata = mdata[['realgdp', 'realcons']]
+        mdata = recarray_select(mdata, ['realgdp', 'realcons'])
         data = mdata.view((float, 2))
         data = np.diff(np.log(data), axis=0)
 
@@ -239,6 +399,73 @@ class TestGrangerCausality(object):
         assert_raises(ValueError, grangercausalitytests, X, 3, verbose=False)
 
 
+class SetupKPSS(object):
+    data = macrodata.load()
+    x = data.data['realgdp']
+
+
+class TestKPSS(SetupKPSS):
+    """
+    R-code
+    ------
+    library(tseries)
+    kpss.stat(x, "Level")
+    kpss.stat(x, "Trend")
+
+    In this context, x is the vector containing the
+    macrodata['realgdp'] series.
+    """
+
+    def test_fail_nonvector_input(self):
+        with warnings.catch_warnings(record=True) as w:
+            kpss(self.x)  # should be fine
+
+        x = np.random.rand(20, 2)
+        assert_raises(ValueError, kpss, x)
+
+    def test_fail_unclear_hypothesis(self):
+        # these should be fine,
+        with warnings.catch_warnings(record=True) as w:
+            kpss(self.x, 'c')
+            kpss(self.x, 'C')
+            kpss(self.x, 'ct')
+            kpss(self.x, 'CT')
+
+        assert_raises(ValueError, kpss, self.x, "unclear hypothesis")
+
+    def test_teststat(self):
+        with warnings.catch_warnings(record=True) as w:
+            kpss_stat, pval, lags, crits = kpss(self.x, 'c', 3)
+        assert_almost_equal(kpss_stat, 5.0169, DECIMAL_3)
+
+        with warnings.catch_warnings(record=True) as w:
+            kpss_stat, pval, lags, crits = kpss(self.x, 'ct', 3)
+        assert_almost_equal(kpss_stat, 1.1828, DECIMAL_3)
+
+    def test_pval(self):
+        with warnings.catch_warnings(record=True) as w:
+            kpss_stat, pval, lags, crits = kpss(self.x, 'c', 3)
+        assert_equal(pval, 0.01)
+
+        with warnings.catch_warnings(record=True) as w:
+            kpss_stat, pval, lags, crits = kpss(self.x, 'ct', 3)
+        assert_equal(pval, 0.01)
+
+    def test_store(self):
+        with warnings.catch_warnings(record=True) as w:
+            kpss_stat, pval, crit, store = kpss(self.x, 'c', 3, True)
+
+        # assert attributes, and make sure they're correct
+        assert_equal(store.nobs, len(self.x))
+        assert_equal(store.lags, 3)
+
+    def test_lags(self):
+        with warnings.catch_warnings(record=True) as w:
+            kpss_stat, pval, lags, crits = kpss(self.x, 'c')
+        assert_equal(lags, int(np.ceil(12. * np.power(len(self.x) / 100., 1 / 4.))))
+        # assert_warns(UserWarning, kpss, self.x)
+
+
 
 def test_pandasacovf():
     s = Series(lrange(1, 11))
@@ -247,7 +474,7 @@ def test_pandasacovf():
 
 def test_acovf2d():
     dta = sunspots.load_pandas().data
-    dta.index = Index(dates_from_range('1700', '2008'))
+    dta.index = DatetimeIndex(start='1700', end='2009', freq='A')[:309]
     del dta["YEAR"]
     res = acovf(dta)
     assert_equal(res, acovf(dta.values))
@@ -309,6 +536,7 @@ def test_arma_order_select_ic():
 def test_arma_order_select_ic_failure():
     # this should trigger an SVD convergence failure, smoke test that it
     # returns, likely platform dependent failure...
+    # looks like AR roots may be cancelling out for 4, 1?
     y = np.array([ 0.86074377817203640006,  0.85316549067906921611,
         0.87104653774363305363,  0.60692382068987393851,
         0.69225941967301307667,  0.73336177248909339976,
@@ -319,11 +547,19 @@ def test_arma_order_select_ic_failure():
        -0.15943768324388354896,  0.25169301564268781179,
         0.1762305709151877342 ,  0.12678133368791388857,
         0.89755829086753169399,  0.82667068795350151511])
-    res = arma_order_select_ic(y)
+    import warnings
+    with warnings.catch_warnings():
+        # catch a hessian inversion and convergence failure warning
+        warnings.simplefilter("ignore")
+        res = arma_order_select_ic(y)
 
+
+def test_acf_fft_dataframe():
+    # regression test #322
+
+    result = acf(sunspots.load_pandas().data[['SUNACTIVITY']], fft=True)
+    assert_equal(result.ndim, 1)
 
 if __name__=="__main__":
-    import nose
-#    nose.runmodule(argv=[__file__, '-vvs','-x','-pdb'], exit=False)
-    import numpy as np
-    np.testing.run_module_suite()
+    import pytest
+    pytest.main([__file__, '-vvs', '-x', '--pdb'])

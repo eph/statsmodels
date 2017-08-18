@@ -1,10 +1,10 @@
 from __future__ import division
-from statsmodels.compat.python import iteritems, range, string_types, lmap
+from statsmodels.compat.python import iteritems, range, string_types, lmap, long
 
 import numpy as np
 from numpy import dot, identity
 from numpy.linalg import inv, slogdet
-from scipy.stats import norm, ss as sumofsq
+from scipy.stats import norm
 from statsmodels.regression.linear_model import OLS
 from statsmodels.tsa.tsatools import (lagmat, add_trend,
                                       _ar_transparams, _ar_invtransparams)
@@ -16,30 +16,20 @@ from statsmodels.tools.numdiff import approx_fprime, approx_hess
 from statsmodels.tsa.kalmanf.kalmanfilter import KalmanFilter
 import statsmodels.base.wrapper as wrap
 from statsmodels.tsa.vector_ar import util
-from statsmodels.tsa.base.datetools import _index_date
 
 
 __all__ = ['AR']
+
+
+def sumofsq(x, axis=0):
+    """Helper function to calculate sum of squares along first axis"""
+    return np.sum(x**2, axis=axis)
 
 
 def _check_ar_start(start, k_ar, method, dynamic):
     if (method == 'cmle' or dynamic) and start < k_ar:
         raise ValueError("Start must be >= k_ar for conditional MLE "
                          "or dynamic forecast. Got %d" % start)
-
-
-def _validate(start, k_ar, dates, method):
-    """
-    Checks the date and then returns an integer
-    """
-    from datetime import datetime
-    if isinstance(start, (string_types, datetime)):
-        start_date = start
-        start = _index_date(start, dates)
-    if 'mle' not in method and start < k_ar:
-        raise ValueError("Start must be >= k_ar for conditional MLE or "
-                         "dynamic forecast. Got %s" % start_date)
-    return start
 
 
 def _ar_predict_out_of_sample(y, params, p, k_trend, steps, start=0):
@@ -140,7 +130,7 @@ class AR(tsbase.TimeSeriesModel):
             if i >= start - 1:  # only record if we ask for it
                 predictedvalues[i + 1 - start] = dot(Z_mat, alpha)
 
-    def _get_predict_start(self, start, dynamic):
+    def _get_prediction_index(self, start, end, dynamic, index=None):
         method = getattr(self, 'method', 'mle')
         k_ar = getattr(self, 'k_ar', 0)
         if start is None:
@@ -148,14 +138,21 @@ class AR(tsbase.TimeSeriesModel):
                 start = 0
             else:  # can't do presample fit for cmle or dynamic
                 start = k_ar
-        elif isinstance(start, int):
-            start = super(AR, self)._get_predict_start(start)
-        else:  # should be a date
-            start = _validate(start, k_ar, self.data.dates, method)
-            start = super(AR, self)._get_predict_start(start)
+            start = self._index[start]
+        if end is None:
+            end = self._index[-1]
+
+        start, end, out_of_sample, prediction_index = (
+            super(AR, self)._get_prediction_index(start, end, index))
+
+        # This replaces the _validate() call
+        if 'mle' not in method and start < k_ar:
+            raise ValueError("Start must be >= k_ar for conditional MLE or "
+                             "dynamic forecast. Got %s" % start)
+        # Other validation
         _check_ar_start(start, k_ar, method, dynamic)
-        self._set_predict_start_date(start)
-        return start
+
+        return start, end, out_of_sample, prediction_index
 
     def predict(self, params, start=None, end=None, dynamic=False):
         """
@@ -191,8 +188,8 @@ class AR(tsbase.TimeSeriesModel):
         in the references for more information.
         """
         # will return an index of a date
-        start = self._get_predict_start(start, dynamic)
-        end, out_of_sample = self._get_predict_end(end)
+        start, end, out_of_sample, _ = (
+            self._get_prediction_index(start, end, dynamic))
 
         if start - end > 1:
             raise ValueError("end is before start")
@@ -256,10 +253,8 @@ class AR(tsbase.TimeSeriesModel):
 
         Vpinv = np.zeros((p, p), dtype=params.dtype)
         for i in range(1, p1):
-            Vpinv[i-1, i-1:] = np.correlate(params0, params0[:i],
-                                            old_behavior=False)[:-1]
-            Vpinv[i-1, i-1:] -= np.correlate(params0[-i:], params0,
-                                             old_behavior=False)[:-1]
+            Vpinv[i-1, i-1:] = np.correlate(params0, params0[:i],)[:-1]
+            Vpinv[i-1, i-1:] -= np.correlate(params0[-i:], params0,)[:-1]
 
         Vpinv = Vpinv + Vpinv.T - np.diag(Vpinv.diagonal())
         return Vpinv
@@ -445,6 +440,7 @@ class AR(tsbase.TimeSeriesModel):
                                         full_output=0, trend=trend,
                                         maxiter=35, disp=-1)
 
+                bestlag = 0
                 if np.abs(fit.tvalues[-1]) >= stop:
                     bestlag = lag
                     break
@@ -595,7 +591,7 @@ class AR(tsbase.TimeSeriesModel):
         pinv_exog = np.linalg.pinv(X)
         normalized_cov_params = np.dot(pinv_exog, pinv_exog.T)
         arfit = ARResults(self, params, normalized_cov_params)
-        if method == 'mle':
+        if method == 'mle' and full_output:
             arfit.mle_retvals = mlefit.mle_retvals
             arfit.mle_settings = mlefit.mle_settings
         return ARResultsWrapper(arfit)
@@ -796,8 +792,8 @@ class ARResults(tsbase.TimeSeriesModelResults):
         predictedvalues = self.model.predict(params, start, end, dynamic)
         return predictedvalues
 
-        #start = self.model._get_predict_start(start)
-        #end, out_of_sample = self.model._get_predict_end(end)
+        # start, end, out_of_sample, prediction_index = (
+        #     self.model._get_prediction_index(start, end, index))
 
         ##TODO: return forecast errors and confidence intervals
         #from statsmodels.tsa.arima_process import arma2ma
@@ -881,19 +877,20 @@ if __name__ == "__main__":
     #should this be up to the user, or should it be done in TSM init?
     #NOTE: not anymore, it's end of year now
     ts_dr = ts.date_array(start_date=d1, length=len(sunspots.endog))
-    pandas_dr = pandas.DateRange(start=d1.datetime,
-                                 periods=len(sunspots.endog), timeRule='A@DEC')
+    pandas_dr = pandas.DatetimeIndex(start=d1.datetime,
+                                 periods=len(sunspots.endog),
+                                     freq='A-DEC')
     #pandas_dr = pandas_dr.shift(-1, pandas.datetools.yearBegin)
 
     dates = np.arange(1700, 1700 + len(sunspots.endog))
     dates = ts.date_array(dates, freq='A')
-    #sunspots = pandas.TimeSeries(sunspots.endog, index=dates)
+    #sunspots = pandas.Series(sunspots.endog, index=dates)
 
     #NOTE: pandas only does business days for dates it looks like
     import datetime
     dt_dates = np.asarray(lmap(datetime.datetime.fromordinal,
                               ts_dr.toordinal().astype(int)))
-    sunspots = pandas.TimeSeries(sunspots.endog, index=dt_dates)
+    sunspots = pandas.Series(sunspots.endog, index=dt_dates)
 
     #NOTE: pandas can't handle pre-1900 dates
     mod = AR(sunspots, freq='A')

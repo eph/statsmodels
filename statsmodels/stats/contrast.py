@@ -10,9 +10,14 @@ from statsmodels.compat.numpy import np_matrix_rank
 #TODO: should this be public if it's just a container?
 class ContrastResults(object):
     """
-    Container class for looking at contrasts of coefficients in a model.
+    Class for results of tests of linear restrictions on coefficients in a model.
 
-    The class does nothing, it is a container for the results from T and F.
+    This class functions mainly as a container for `t_test`, `f_test` and
+    `wald_test` for the parameters of a model.
+
+    The attributes depend on the statistical test and are either based on the
+    normal, the t, the F or the chisquare distribution.
+
     """
 
     def __init__(self, t=None, F=None, sd=None, effect=None, df_denom=None,
@@ -22,6 +27,7 @@ class ContrastResults(object):
         if F is not None:
             self.distribution = 'F'
             self.fvalue = F
+            self.statistic = self.fvalue
             self.df_denom = df_denom
             self.df_num = df_num
             self.dist = fdist
@@ -57,6 +63,24 @@ class ContrastResults(object):
 
 
     def conf_int(self, alpha=0.05):
+        """
+        Returns the confidence interval of the value, `effect` of the constraint.
+
+        This is currently only available for t and z tests.
+
+        Parameters
+        ----------
+        alpha : float, optional
+            The significance level for the confidence interval.
+            ie., The default `alpha` = .05 returns a 95% confidence interval.
+
+        Returns
+        -------
+        ci : ndarray, (k_constraints, 2)
+            The array has the lower and the upper limit of the confidence
+            interval in the columns.
+
+        """
         if self.effect is not None:
             # confidence intervals
             q = self.dist.ppf(1 - alpha / 2., *self.dist_args)
@@ -82,6 +106,29 @@ class ContrastResults(object):
 
 
     def summary(self, xname=None, alpha=0.05, title=None):
+        """Summarize the Results of the hypothesis test
+
+        Parameters
+        -----------
+
+        xname : list of strings, optional
+            Default is `c_##` for ## in p the number of regressors
+        alpha : float
+            significance level for the confidence intervals. Default is
+            alpha = 0.05 which implies a confidence level of 95%.
+        title : string, optional
+            Title for the params table. If not None, then this replaces the
+            default title
+
+        Returns
+        -------
+        smry : string or Summary instance
+            This contains a parameter results table in the case of t or z test
+            in the same form as the parameter results table in the model
+            results summary.
+            For F or Wald test, the return is a string.
+
+        """
         if self.effect is not None:
             # TODO: should also add some extra information, e.g. robust cov ?
             # TODO: can we infer names for constraints, xname in __init__ ?
@@ -97,10 +144,11 @@ class ContrastResults(object):
             if xname is None:
                 xname = ['c%d'%ii for ii in range(len(self.effect))]
             from statsmodels.iolib.summary import summary_params
+            pvalues = np.atleast_1d(self.pvalue)
             summ = summary_params((self, self.effect, self.sd, self.statistic,
-                                   self.pvalue, self.conf_int(alpha)),
+                                   pvalues, self.conf_int(alpha)),
                                   yname=yname, xname=xname, use_t=use_t,
-                                  title=title)
+                                  title=title, alpha=alpha)
             return summ
         elif hasattr(self, 'fvalue'):
             # TODO: create something nicer for these casee
@@ -113,6 +161,10 @@ class ContrastResults(object):
 
 
     def summary_frame(self, xname=None, alpha=0.05):
+        """Return the parameter table as a pandas DataFrame
+
+        This is only available for t and normal tests
+        """
         if self.effect is not None:
             # we have everything for a params table
             use_t = (self.distribution == 't')
@@ -123,7 +175,8 @@ class ContrastResults(object):
             summ = summary_params_frame((self, self.effect, self.sd,
                                          self.statistic,self.pvalue,
                                          self.conf_int(alpha)), yname=yname,
-                                         xname=xname, use_t=use_t)
+                                         xname=xname, use_t=use_t,
+                                         alpha=alpha)
             return summ
         else:
             # TODO: create something nicer
@@ -154,7 +207,7 @@ class Contrast(object):
 
     Parameters
     ----------
-    term ; array-like
+    term : array-like
     design : array-like
 
     Attributes
@@ -162,40 +215,38 @@ class Contrast(object):
     contrast_matrix
 
     Examples
-    ---------
-    >>>import numpy.random as R
-    >>>import statsmodels.api as sm
-    >>>import numpy as np
-    >>>R.seed(54321)
-    >>>X = R.standard_normal((40,10))
-
-    Get a contrast
-
-    >>>new_term = np.column_stack((X[:,0], X[:,2]))
-    >>>c = sm.contrast.Contrast(new_term, X)
-    >>>test = [[1] + [0]*9, [0]*2 + [1] + [0]*7]
-    >>>np.allclose(c.contrast_matrix, test)
+    --------
+    >>> import statsmodels.api as sm
+    >>> from statsmodels.stats.contrast import Contrast
+    >>> import numpy as np
+    >>> np.random.seed(54321)
+    >>> X = np.random.standard_normal((40,10))
+    # Get a contrast
+    >>> new_term = np.column_stack((X[:,0], X[:,2]))
+    >>> c = Contrast(new_term, X)
+    >>> test = [[1] + [0]*9, [0]*2 + [1] + [0]*7]
+    >>> np.allclose(c.contrast_matrix, test)
     True
 
     Get another contrast
 
-    >>>P = np.dot(X, np.linalg.pinv(X))
-    >>>resid = np.identity(40) - P
-    >>>noise = np.dot(resid,R.standard_normal((40,5)))
-    >>>new_term2 = np.column_stack((noise,X[:,2]))
-    >>>c2 = Contrast(new_term2, X)
-    >>>print c2.contrast_matrix
+    >>> P = np.dot(X, np.linalg.pinv(X))
+    >>> resid = np.identity(40) - P
+    >>> noise = np.dot(resid,np.random.standard_normal((40,5)))
+    >>> new_term2 = np.column_stack((noise,X[:,2]))
+    >>> c2 = Contrast(new_term2, X)
+    >>> print(c2.contrast_matrix)
     [ -1.26424750e-16   8.59467391e-17   1.56384718e-01  -2.60875560e-17
-  -7.77260726e-17  -8.41929574e-18  -7.36359622e-17  -1.39760860e-16
-   1.82976904e-16  -3.75277947e-18]
+    -7.77260726e-17  -8.41929574e-18  -7.36359622e-17  -1.39760860e-16
+    1.82976904e-16  -3.75277947e-18]
 
     Get another contrast
 
-    >>>zero = np.zeros((40,))
-    >>>new_term3 = np.column_stack((zero,X[:,2]))
-    >>>c3 = sm.contrast.Contrast(new_term3, X)
-    >>>test2 = [0]*2 + [1] + [0]*7
-    >>>np.allclose(c3.contrast_matrix, test2)
+    >>> zero = np.zeros((40,))
+    >>> new_term3 = np.column_stack((zero,X[:,2]))
+    >>> c3 = Contrast(new_term3, X)
+    >>> test2 = [0]*2 + [1] + [0]*7
+    >>> np.allclose(c3.contrast_matrix, test2)
     True
 
     """
@@ -292,3 +343,70 @@ def contrastfromcols(L, D, pseudo=None):
         C = np.dot(pseudo, Lp).T
 
     return np.squeeze(C)
+
+
+# TODO: this is currently a minimal version, stub
+class WaldTestResults(object):
+    # for F and chi2 tests of joint hypothesis, mainly for vectorized
+
+    def __init__(self, statistic, distribution, dist_args, table=None,
+                 pvalues=None):
+        self.table = table
+
+        self.distribution = distribution
+        self.statistic = statistic
+        #self.sd = sd
+        self.dist_args = dist_args
+
+        # The following is because I don't know which we want
+        if table is not None:
+            self.statistic = table['statistic'].values
+            self.pvalues = table['pvalue'].values
+            self.df_constraints = table['df_constraint'].values
+            if self.distribution == 'F':
+                self.df_denom = table['df_denom'].values
+
+        else:
+            if self.distribution is 'chi2':
+                self.dist = stats.chi2
+                self.df_constraints = self.dist_args[0]  # assumes tuple
+                # using dist_args[0] is a bit dangerous,
+            elif self.distribution is 'F':
+                self.dist = stats.f
+                self.df_constraints, self.df_denom = self.dist_args
+
+            else:
+                raise ValueError('only F and chi2 are possible distribution')
+
+            if pvalues is None:
+                self.pvalues = self.dist.sf(np.abs(statistic), *dist_args)
+            else:
+                self.pvalues = pvalues
+
+    @property
+    def col_names(self):
+        """column names for summary table
+        """
+
+        pr_test = "P>%s" % self.distribution
+        col_names = [self.distribution, pr_test, 'df constraint']
+        if self.distribution == 'F':
+            col_names.append('df denom')
+        return col_names
+
+    def summary_frame(self):
+        # needs to be a method for consistency
+        if hasattr(self, '_dframe'):
+            return self._dframe
+        # rename the column nambes, but don't copy data
+        renaming = dict(zip(self.table.columns, self.col_names))
+        self.dframe = self.table.rename(columns=renaming)
+        return self.dframe
+
+
+    def __str__(self):
+        return self.summary_frame().to_string()
+
+
+    def __repr__(self):
+        return str(self.__class__) + '\n' + self.__str__()

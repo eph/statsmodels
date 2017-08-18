@@ -25,7 +25,7 @@ class VarianceFunction(object):
 
     See also
     --------
-    statsmodels.family.family
+    statsmodels.genmod.families.family
     """
 
     def __call__(self, mu):
@@ -45,9 +45,16 @@ class VarianceFunction(object):
         mu = np.asarray(mu)
         return np.ones(mu.shape, np.float64)
 
+    def deriv(self, mu):
+        """
+        Derivative of the variance function v'(mu)
+        """
+        return np.zeros_like(mu)
+
+
 constant = VarianceFunction()
 constant.__doc__ = """
-The call method of constnat returns a constant variance, ie., a vector of ones.
+The call method of constant returns a constant variance, i.e., a vector of ones.
 
 constant is an alias of VarianceFunction()
 """
@@ -96,6 +103,19 @@ class Power(object):
             numpy.fabs(mu)**self.power
         """
         return np.power(np.fabs(mu), self.power)
+
+    def deriv(self, mu):
+        """
+        Derivative of the variance function v'(mu)
+
+        May be undefined at zero.
+        """
+
+        der = self.power * np.fabs(mu) ** (self.power - 1)
+        ii = np.flatnonzero(mu < 0)
+        der[ii] *= -1
+        return der
+
 
 mu = Power()
 mu.__doc__ = """
@@ -175,6 +195,14 @@ class Binomial(object):
         p = self._clean(mu / self.n)
         return p * (1 - p) * self.n
 
+    #TODO: inherit from super
+    def deriv(self, mu):
+        """
+        Derivative of the variance function v'(mu)
+        """
+        return 1 - 2*mu
+
+
 binary = Binomial()
 binary.__doc__ = """
 The binomial variance function for n = 1
@@ -234,6 +262,14 @@ class NegativeBinomial(object):
         """
         p = self._clean(mu)
         return p + self.alpha*p**2
+
+    def deriv(self, mu):
+        """
+        Derivative of the negative binomial variance function.
+        """
+
+        p = self._clean(mu)
+        return 1 + 2 * self.alpha * p
 
 nbinom = NegativeBinomial()
 nbinom.__doc__ = """

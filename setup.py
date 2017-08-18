@@ -12,12 +12,18 @@ from os.path import relpath, join as pjoin
 import sys
 import subprocess
 import re
+from distutils.version import StrictVersion, LooseVersion
+
 
 # temporarily redirect config directory to prevent matplotlib importing
 # testing that for writeable directory which results in sandbox error in
 # certain easy_install versions
 os.environ["MPLCONFIGDIR"] = "."
 
+no_frills = (len(sys.argv) >= 2 and ('--help' in sys.argv[1:] or
+                                     sys.argv[1] in ('--help-commands',
+                                                     'egg_info', '--version',
+                                                     'clean')))
 
 # try bootstrapping setuptools if it doesn't exist
 try:
@@ -34,37 +40,31 @@ except ImportError:
     from distutils.core import setup, Command
     _have_setuptools = False
 
-setuptools_kwargs = {}
-if sys.version_info[0] >= 3:
-    setuptools_kwargs = {'zip_safe': False}
-
-    if not _have_setuptools:
-        sys.exit("need setuptools/distribute for Py3k"
-                 "\n$ pip install distribute")
+if _have_setuptools:
+    setuptools_kwargs = {"zip_safe": False,
+                         "test_suite": "nose.collector"}
 else:
-    setuptools_kwargs = {
-        'install_requires': [],
-        'zip_safe': False,
-    }
-
-if not _have_setuptools:
     setuptools_kwargs = {}
+    if sys.version_info[0] >= 3:
+        sys.exit("Need setuptools to install statsmodels for Python 3.x")
+
 
 curdir = os.path.abspath(os.path.dirname(__file__))
-README = open(pjoin(curdir, "README.txt")).read()
+README = open(pjoin(curdir, "README.rst")).read()
+CYTHON_EXCLUSION_FILE = 'cythonize_exclusions.dat'
 
 DISTNAME = 'statsmodels'
-DESCRIPTION = 'Statistical computations and models for use with SciPy'
+DESCRIPTION = 'Statistical computations and models for Python'
 LONG_DESCRIPTION = README
 MAINTAINER = 'Skipper Seabold, Josef Perktold'
 MAINTAINER_EMAIL ='pystatsmodels@googlegroups.com'
-URL = 'http://statsmodels.sourceforge.net/'
+URL = 'http://www.statsmodels.org/'
 LICENSE = 'BSD License'
 DOWNLOAD_URL = ''
 
+# These imports need to be here; setuptools needs to be imported first.
 from distutils.extension import Extension
 from distutils.command.build import build
-from distutils.command.sdist import sdist
 from distutils.command.build_ext import build_ext as _build_ext
 
 
@@ -90,78 +90,104 @@ def generate_cython():
         raise RuntimeError("Running cythonize failed!")
 
 
+def init_cython_exclusion(filename):
+    with open(filename, 'w') as f:
+        pass
+
+
+def append_cython_exclusion(path, filename):
+    with open(filename, 'a') as f:
+        f.write(path + "\n")
+
+
 def strip_rc(version):
     return re.sub(r"rc\d+$", "", version)
 
 
 def check_dependency_versions(min_versions):
     """
-    Don't let setuptools do this. It's rude.
+    Don't let pip/setuptools do this all by itself.  It's rude.
 
-    Just makes sure it can import the packages and if not, stops the build
-    process.
+    For all dependencies, try to import them and check if the versions of
+    installed dependencies match the minimum version requirements.  If
+    installed but version too low, raise an error.  If not installed at all,
+    return the correct ``setup_requires`` and ``install_requires`` arguments to
+    be added to the setuptools kwargs.  This prevents upgrading installed
+    dependencies like numpy (that should be an explicit choice by the user and
+    never happen automatically), but make things work when installing into an
+    empty virtualenv for example.
+
     """
-    from distutils.version import StrictVersion
+    setup_requires = []
+    install_requires = []
+
     try:
         from numpy.version import short_version as npversion
     except ImportError:
-        raise ImportError("statsmodels requires numpy")
+        setup_requires.append('numpy')
+        install_requires.append('numpy')
+    else:
+        if not (LooseVersion(npversion) >= min_versions['numpy']):
+            raise ImportError("Numpy version is %s. Requires >= %s" %
+                              (npversion, min_versions['numpy']))
+
     try:
-        from scipy.version import short_version as spversion
+        import scipy
     except ImportError:
-        try: # scipy 0.7.0
-            from scipy.version import version as spversion
+        install_requires.append('scipy')
+    else:
+        try:
+            from scipy.version import short_version as spversion
         except ImportError:
-            raise ImportError("statsmodels requires scipy")
+            from scipy.version import version as spversion  # scipy 0.7.0
+        if not (LooseVersion(spversion) >= min_versions['scipy']):
+            raise ImportError("Scipy version is %s. Requires >= %s" %
+                              (spversion, min_versions['scipy']))
+
     try:
-        from pandas.version import short_version as pversion
+        from pandas import __version__ as pversion
     except ImportError:
-        raise ImportError("statsmodels requires pandas")
+        install_requires.append('pandas')
+    else:
+        if not (LooseVersion(pversion) >= min_versions['pandas']):
+            ImportError("Pandas version is %s. Requires >= %s" %
+                        (pversion, min_versions['pandas']))
+
     try:
         from patsy import __version__ as patsy_version
     except ImportError:
-        raise ImportError("statsmodels requires patsy. http://patsy.readthedocs.org")
-
-    try:
-        assert StrictVersion(strip_rc(npversion)) >= min_versions['numpy']
-    except AssertionError:
-        raise ImportError("Numpy version is %s. Requires >= %s" %
-                (npversion, min_versions['numpy']))
-    try:
-        assert StrictVersion(strip_rc(spversion)) >= min_versions['scipy']
-    except AssertionError:
-        raise ImportError("Scipy version is %s. Requires >= %s" %
-                (spversion, min_versions['scipy']))
-    try:
-        assert StrictVersion(strip_rc(pversion)) >= min_versions['pandas']
-    except AssertionError:
-        raise ImportError("Pandas version is %s. Requires >= %s" %
-                (pversion, min_versions['pandas']))
-
-    try: # patsy dev looks like 0.1.0+dev
+        install_requires.append('patsy')
+    else:
+        # patsy dev looks like 0.1.0+dev
         pversion = re.match("\d*\.\d*\.\d*", patsy_version).group()
-        assert StrictVersion(pversion) >= min_versions['patsy']
-    except AssertionError:
-        raise ImportError("Patsy version is %s. Requires >= %s" %
-                (pversion, min_versions["patsy"]))
+        if not (LooseVersion(pversion) >= min_versions['patsy']):
+            raise ImportError("Patsy version is %s. Requires >= %s" %
+                              (pversion, min_versions["patsy"]))
+
+    return setup_requires, install_requires
 
 
 MAJ = 0
-MIN = 6
+MIN = 8
 REV = 0
 ISRELEASED = False
 VERSION = '%d.%d.%d' % (MAJ,MIN,REV)
 
-classifiers = [ 'Development Status :: 4 - Beta',
-              'Environment :: Console',
-              'Programming Language :: Python :: 2.6',
-              'Programming Language :: Python :: 2.7',
-              'Programming Language :: Python :: 3.2',
-              'Operating System :: OS Independent',
-              'Intended Audience :: Developers',
-              'Intended Audience :: Science/Research',
-              'License :: OSI Approved :: BSD License',
-              'Topic :: Scientific/Engineering']
+classifiers = ['Development Status :: 4 - Beta',
+               'Environment :: Console',
+               'Programming Language :: Cython',
+               'Programming Language :: Python :: 2.6',
+               'Programming Language :: Python :: 2.7',
+               'Programming Language :: Python :: 3.3',
+               'Programming Language :: Python :: 3.4',
+               'Programming Language :: Python :: 3.5',
+               'Operating System :: OS Independent',
+               'Intended Audience :: End Users/Desktop',
+               'Intended Audience :: Developers',
+               'Intended Audience :: Science/Research',
+               'Natural Language :: English',
+               'License :: OSI Approved :: BSD License',
+               'Topic :: Scientific/Engineering']
 
 # Return the git revision as a string
 def git_version():
@@ -210,11 +236,12 @@ def write_version_py(filename=pjoin(curdir, 'statsmodels/version.py')):
             from statsmodels.version import git_revision as GIT_REVISION
         except ImportError:
             dowrite = False
+            GIT_REVISION = "Unknown"
     else:
         GIT_REVISION = "Unknown"
 
     if not ISRELEASED:
-        FULLVERSION += '.dev-' + GIT_REVISION[:7]
+        FULLVERSION += '.dev0+' + GIT_REVISION[:7]
 
 
     if dowrite:
@@ -316,37 +343,128 @@ cmdclass["build_ext"] = CheckingBuildExt
 #NOTE: we are not currently using this but add it to Extension, if needed.
 # libraries = ['m'] if 'win32' not in sys.platform else []
 
+from numpy.distutils.misc_util import get_info
+
+# Reset the cython exclusions file
+init_cython_exclusion(CYTHON_EXCLUSION_FILE)
+
+npymath_info = get_info("npymath")
 ext_data = dict(
-        kalman_loglike = {"name" : "statsmodels/tsa/kalmanf/kalman_loglike.c",
-                  "depends" : ["statsmodels/tsa/kalmanf/capsule.h"],
-                  "sources" : []},
+    kalman_loglike = {"name" : "statsmodels/tsa/kalmanf/kalman_loglike.c",
+              "depends" : ["statsmodels/src/capsule.h"],
+              "include_dirs": ["statsmodels/src"],
+              "sources" : []},
+    _hamilton_filter = {"name" : "statsmodels/tsa/regime_switching/_hamilton_filter.c",
+              "depends" : [],
+              "include_dirs": [],
+              "sources" : []},
+    _kim_smoother = {"name" : "statsmodels/tsa/regime_switching/_kim_smoother.c",
+              "depends" : [],
+              "include_dirs": [],
+              "sources" : []},
+    _statespace = {"name" : "statsmodels/tsa/statespace/_statespace.c",
+              "depends" : ["statsmodels/src/capsule.h"],
+              "include_dirs": ["statsmodels/src"] + npymath_info['include_dirs'],
+              "libraries": npymath_info['libraries'],
+              "library_dirs": npymath_info['library_dirs'],
+              "sources" : []},
+    linbin = {"name" : "statsmodels/nonparametric/linbin.c",
+             "depends" : [],
+             "sources" : []},
+    _smoothers_lowess = {"name" : "statsmodels/nonparametric/_smoothers_lowess.c",
+             "depends" : [],
+             "sources" : []}
+    )
 
-        linbin = {"name" : "statsmodels/nonparametric/linbin.c",
-                 "depends" : [],
-                 "sources" : []},
-        _smoothers_lowess = {"name" : "statsmodels/nonparametric/_smoothers_lowess.c",
-                 "depends" : [],
-                 "sources" : []}
-        )
-
+statespace_ext_data = dict(
+    _representation = {"name" : "statsmodels/tsa/statespace/_representation.c",
+              "include_dirs": ['statsmodels/src'] + npymath_info['include_dirs'],
+              "libraries": npymath_info['libraries'],
+              "library_dirs": npymath_info['library_dirs'],
+              "sources": []},
+    _kalman_filter = {"name" : "statsmodels/tsa/statespace/_kalman_filter.c",
+              "include_dirs": ['statsmodels/src'] + npymath_info['include_dirs'],
+              "libraries": npymath_info['libraries'],
+              "library_dirs": npymath_info['library_dirs'],
+              "sources": []},
+    _kalman_filter_conventional = {"name" : "statsmodels/tsa/statespace/_filters/_conventional.c",
+              "filename": "_conventional",
+              "include_dirs": ['statsmodels/src'] + npymath_info['include_dirs'],
+              "libraries": npymath_info['libraries'],
+              "library_dirs": npymath_info['library_dirs'],
+              "sources": []},
+    _kalman_filter_inversions = {"name" : "statsmodels/tsa/statespace/_filters/_inversions.c",
+              "filename": "_inversions",
+              "include_dirs": ['statsmodels/src'] + npymath_info['include_dirs'],
+              "libraries": npymath_info['libraries'],
+              "library_dirs": npymath_info['library_dirs'],
+              "sources": []},
+    _kalman_filter_univariate = {"name" : "statsmodels/tsa/statespace/_filters/_univariate.c",
+              "filename": "_univariate",
+              "include_dirs": ['statsmodels/src'] + npymath_info['include_dirs'],
+              "libraries": npymath_info['libraries'],
+              "library_dirs": npymath_info['library_dirs'],
+              "sources": []},
+    _kalman_smoother = {"name" : "statsmodels/tsa/statespace/_kalman_smoother.c",
+              "include_dirs": ['statsmodels/src'] + npymath_info['include_dirs'],
+              "libraries": npymath_info['libraries'],
+              "library_dirs": npymath_info['library_dirs'],
+              "sources": []},
+    _kalman_smoother_alternative = {"name" : "statsmodels/tsa/statespace/_smoothers/_alternative.c",
+              "filename": "_alternative",
+              "include_dirs": ['statsmodels/src'] + npymath_info['include_dirs'],
+              "libraries": npymath_info['libraries'],
+              "library_dirs": npymath_info['library_dirs'],
+              "sources": []},
+    _kalman_smoother_classical = {"name" : "statsmodels/tsa/statespace/_smoothers/_classical.c",
+              "filename": "_classical",
+              "include_dirs": ['statsmodels/src'] + npymath_info['include_dirs'],
+              "libraries": npymath_info['libraries'],
+              "library_dirs": npymath_info['library_dirs'],
+              "sources": []},
+    _kalman_smoother_conventional = {"name" : "statsmodels/tsa/statespace/_smoothers/_conventional.c",
+              "filename": "_conventional",
+              "include_dirs": ['statsmodels/src'] + npymath_info['include_dirs'],
+              "libraries": npymath_info['libraries'],
+              "library_dirs": npymath_info['library_dirs'],
+              "sources": []},
+    _kalman_smoother_univariate = {"name" : "statsmodels/tsa/statespace/_smoothers/_univariate.c",
+              "filename": "_univariate",
+              "include_dirs": ['statsmodels/src'] + npymath_info['include_dirs'],
+              "libraries": npymath_info['libraries'],
+              "library_dirs": npymath_info['library_dirs'],
+              "sources": []},
+    _kalman_simulation_smoother = {"name" : "statsmodels/tsa/statespace/_simulation_smoother.c",
+              "filename": "_simulation_smoother",
+              "include_dirs": ['statsmodels/src'] + npymath_info['include_dirs'],
+              "libraries": npymath_info['libraries'],
+              "library_dirs": npymath_info['library_dirs'],
+              "sources": []},
+    _kalman_tools = {"name" : "statsmodels/tsa/statespace/_tools.c",
+              "filename": "_tools",
+              "sources": []},
+)
+try:
+    from scipy.linalg import cython_blas
+    ext_data.update(statespace_ext_data)
+except ImportError:
+    for name, data in statespace_ext_data.items():
+        path = '.'.join([data["name"].split('.')[0], 'pyx.in'])
+        append_cython_exclusion(path.replace('/', os.path.sep),
+                                CYTHON_EXCLUSION_FILE)
 
 extensions = []
 for name, data in ext_data.items():
-    sources = [data['name']]
+    data['sources'] = data.get('sources', []) + [data['name']]
+
     destdir = ".".join(os.path.dirname(data["name"]).split("/"))
+    data.pop('name')
 
-    sources.extend(data.get('sources', []))
+    filename = data.pop('filename', name)
 
-    obj = Extension('%s.%s' % (destdir, name),
-                    sources=sources,
-                    depends=data.get('depends', []),
-                    include_dirs=data.get('include', []))
+    obj = Extension('%s.%s' % (destdir, filename), **data)
 
     extensions.append(obj)
-
-
-if _have_setuptools:
-    setuptools_kwargs["test_suite"] = "nose.collector"
 
 
 def get_data_files():
@@ -364,9 +482,10 @@ def get_data_files():
     # add all the tests and results files
     for r, ds, fs in os.walk(pjoin(curdir, "statsmodels")):
         r_ = relpath(r, start=curdir)
-        if r_.endswith('results') and 'sandbox' not in r_:
+        if r_.endswith('results'):
             data_files.update({r_.replace(sep, ".") : ["*.csv",
-                                                       "*.txt"]})
+                                                       "*.txt",
+                                                       "*.dta"]})
 
     return data_files
 
@@ -376,19 +495,22 @@ if __name__ == "__main__":
         os.unlink('MANIFEST')
 
     min_versions = {
-        'numpy' : '1.4.0',
-        'scipy' : '0.7.0',
-        'pandas' : '0.7.1',
-        'patsy' : '0.1.0',
+        'numpy' : '1.6.2',
+        'scipy' : '0.11',
+        'pandas' : '0.13',
+        'patsy' : '0.2.1',
                    }
     if sys.version_info[0] == 3 and sys.version_info[1] >= 3:
         # 3.3 needs numpy 1.7+
-        min_versions.update({"numpy" : "1.7.0b2"})
+        min_versions.update({"numpy" : "1.7.0"})
 
-    if not (len(sys.argv) >= 2 and ('--help' in sys.argv[1:] or
-            sys.argv[1] in ('--help-commands', 'egg_info', '--version',
-                            'clean'))):
-        check_dependency_versions(min_versions)
+    (setup_requires,
+     install_requires) = check_dependency_versions(min_versions)
+
+    if _have_setuptools:
+        setuptools_kwargs['setup_requires'] = setup_requires
+        setuptools_kwargs['install_requires'] = install_requires
+
         write_version_py()
 
     # this adds *.csv and *.dta files in datasets folders
@@ -419,9 +541,16 @@ if __name__ == "__main__":
     # 'statsmodels/statsmodelsdoc.chm')
 
     cwd = os.path.abspath(os.path.dirname(__file__))
-    if not os.path.exists(os.path.join(cwd, 'PKG-INFO')):
+    if not os.path.exists(os.path.join(cwd, 'PKG-INFO')) and not no_frills:
         # Generate Cython sources, unless building from source release
         generate_cython()
+    extras = {'docs': ['sphinx>=1.3.5',
+                       'nbconvert>=4.2.0',
+                       'jupyter_client',
+                       'ipykernel',
+                       'matplotlib',
+                       'nbformat>=4.0.1',
+                       'numpydoc>=0.6.0']}
 
     setup(name = DISTNAME,
           version = VERSION,
@@ -439,4 +568,5 @@ if __name__ == "__main__":
           packages = packages,
           package_data = package_data,
           include_package_data=False,  # True will install all files in repo
+          extras_require=extras,
           **setuptools_kwargs)

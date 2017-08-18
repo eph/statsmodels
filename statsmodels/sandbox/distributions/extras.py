@@ -738,6 +738,16 @@ class TransfTwo_gen(distributions.rv_continuous):
                                 shapes = kls.shapes,
                                 longname = longname, extradoc = extradoc)
 
+        # add enough info for self.freeze() to be able to reconstruct the instance
+        try:
+            self._ctor_param.update(dict(kls=kls, func=func,
+                    funcinvplus=funcinvplus, funcinvminus=funcinvminus,
+                    derivplus=derivplus, derivminus=derivminus,
+                    shape=self.shape))
+        except AttributeError:
+            # scipy < 0.14 does not have this, ignore and do nothing
+            pass
+
     def _rvs(self, *args):
         self.kls._size = self._size   #size attached to self, not function argument
         return self.func(self.kls._rvs(*args))
@@ -1005,17 +1015,17 @@ def mvstdnormcdf(lower, upper, corrcoef, **kwds):
     Examples
     --------
 
-    >>> print mvstdnormcdf([-np.inf,-np.inf], [0.0,np.inf], 0.5)
+    >>> print(mvstdnormcdf([-np.inf,-np.inf], [0.0,np.inf], 0.5))
     0.5
     >>> corr = [[1.0, 0, 0.5],[0,1,0],[0.5,0,1]]
-    >>> print mvstdnormcdf([-np.inf,-np.inf,-100.0], [0.0,0.0,0.0], corr, abseps=1e-6)
+    >>> print(mvstdnormcdf([-np.inf,-np.inf,-100.0], [0.0,0.0,0.0], corr, abseps=1e-6))
     0.166666399198
-    >>> print mvstdnormcdf([-np.inf,-np.inf,-100.0],[0.0,0.0,0.0],corr, abseps=1e-8)
+    >>> print(mvstdnormcdf([-np.inf,-np.inf,-100.0],[0.0,0.0,0.0],corr, abseps=1e-8))
     something wrong completion with ERROR > EPS and MAXPTS function values used;
                         increase MAXPTS to decrease ERROR; 1.048330348e-006
     0.166666546218
-    >>> print mvstdnormcdf([-np.inf,-np.inf,-100.0],[0.0,0.0,0.0], corr,
-                            maxpts=100000, abseps=1e-8)
+    >>> print(mvstdnormcdf([-np.inf,-np.inf,-100.0],[0.0,0.0,0.0], corr, \
+                            maxpts=100000, abseps=1e-8))
     0.166666588293
 
     '''
@@ -1026,7 +1036,7 @@ def mvstdnormcdf(lower, upper, corrcoef, **kwds):
     upper = np.array(upper)
     corrcoef = np.array(corrcoef)
 
-    correl = np.zeros(n*(n-1)/2.0)  #dtype necessary?
+    correl = np.zeros(int(n*(n-1)/2.0))  #dtype necessary?
 
     if (lower.ndim != 1) or (upper.ndim != 1):
         raise ValueError('can handle only 1D bounds')

@@ -20,6 +20,7 @@ import scipy.stats as stats
 from statsmodels.tools.decorators import (cache_readonly,
                                                   resettable_cache)
 import statsmodels.regression.linear_model as lm
+import statsmodels.regression._tools as reg_tools
 import statsmodels.robust.norms as norms
 import statsmodels.robust.scale as scale
 import statsmodels.base.model as base
@@ -87,7 +88,7 @@ class RLM(base.LikelihoodModel):
     >>> import statsmodels.api as sm
     >>> data = sm.datasets.stackloss.load()
     >>> data.exog = sm.add_constant(data.exog)
-    >>> rlm_model = sm.RLM(data.endog, data.exog,
+    >>> rlm_model = sm.RLM(data.endog, data.exog, \
                            M=sm.robust.norms.HuberT())
 
     >>> rlm_results = rlm_model.fit()
@@ -100,20 +101,18 @@ class RLM(base.LikelihoodModel):
     array([  0.82938433,   0.92606597,  -0.12784672, -41.02649835])
     >>> rlm_results_HC2.bse
     array([ 0.11945975,  0.32235497,  0.11796313,  9.08950419])
-    >>>
-    >>> rlm_hamp_hub = sm.RLM(data.endog, data.exog,
-                          M=sm.robust.norms.Hampel()).fit(
-                          sm.robust.scale.HuberScale())
-
+    >>> mod = sm.RLM(data.endog, data.exog, M=sm.robust.norms.Hampel())
+    >>> rlm_hamp_hub = mod.fit(scale_est=sm.robust.scale.HuberScale())
     >>> rlm_hamp_hub.params
     array([  0.73175452,   1.25082038,  -0.14794399, -40.27122257])
     """ % {'params' : base._model_params_doc,
             'extra_params' : base._missing_param_doc}
 
-    def __init__(self, endog, exog, M=norms.HuberT(), missing='none'):
+    def __init__(self, endog, exog, M=norms.HuberT(), missing='none',
+                 **kwargs):
         self.M = M
         super(base.LikelihoodModel, self).__init__(endog, exog,
-                missing=missing)
+                missing=missing, **kwargs)
         self._initialize()
         #things to remove_data
         self._data_attr.extend(['weights', 'pinv_wexog'])
@@ -190,8 +189,6 @@ class RLM(base.LikelihoodModel):
         if isinstance(self.scale_est, str):
             if self.scale_est.lower() == 'mad':
                 return scale.mad(resid, center=0)
-            if self.scale_est.lower() == 'stand_mad':
-                return scale.mad(resid)
             else:
                 raise ValueError("Option %s for scale_est not understood" %
                                  self.scale_est)
@@ -255,11 +252,6 @@ class RLM(base.LikelihoodModel):
             raise ValueError("Convergence argument %s not understood" \
                 % conv)
         self.scale_est = scale_est
-        if (isinstance(scale_est,
-                       string_types) and scale_est.lower() == "stand_mad"):
-            from warnings import warn
-            warn("stand_mad is deprecated and will be removed in 0.7.0",
-                 FutureWarning)
 
         wls_results = lm.WLS(self.endog, self.exog).fit()
         if not init:
@@ -284,8 +276,8 @@ class RLM(base.LikelihoodModel):
         converged = 0
         while not converged:
             self.weights = self.M.weights(wls_results.resid/self.scale)
-            wls_results = lm.WLS(self.endog, self.exog,
-                                 weights=self.weights).fit()
+            wls_results = reg_tools._MinimalWLS(self.endog, self.exog,
+                                                weights=self.weights).fit()
             if update_scale is True:
                 self.scale = self._estimate_scale(wls_results.resid)
             history = self._update_history(wls_results, history, conv)
@@ -388,7 +380,7 @@ class RLMResults(base.LikelihoodModelResults):
 
     See also
     --------
-    statsmodels.model.LikelihoodModelResults
+    statsmodels.base.model.LikelihoodModelResults
     """
 
 
@@ -517,7 +509,7 @@ class RLMResults(base.LikelihoodModelResults):
         smry.add_table_2cols(self, gleft=top_left, gright=top_right, #[],
                           yname=yname, xname=xname, title=title)
         smry.add_table_params(self, yname=yname, xname=xname, alpha=alpha,
-                             use_t=False)
+                             use_t=self.use_t)
 
         #diagnostic table is not used yet
 #        smry.add_table_2cols(self, gleft=diagn_left, gright=diagn_right,

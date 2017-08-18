@@ -1,3 +1,6 @@
+.. module:: statsmodels.tsa
+   :synopsis: Time-series analysis
+
 .. currentmodule:: statsmodels.tsa
 
 
@@ -8,9 +11,10 @@ Time Series analysis :mod:`tsa`
 ===============================
 
 :mod:`statsmodels.tsa` contains model classes and functions that are useful
-for time series analysis. This currently includes univariate autoregressive models (AR),
+for time series analysis. Basic models include univariate autoregressive models (AR),
 vector autoregressive models (VAR) and univariate autoregressive moving average models
-(ARMA). It also includes descriptive statistics for time series, for example autocorrelation, partial
+(ARMA). Non-linear models include Markov switching dynamic regression and
+autoregression. It also includes descriptive statistics for time series, for example autocorrelation, partial
 autocorrelation function and periodogram, as well as the corresponding theoretical properties
 of ARMA or related processes. It also includes methods to work with autoregressive and
 moving average lag-polynomials.
@@ -24,7 +28,7 @@ the main classes will be made available in the statsmodels.tsa namespace. The mo
 structure is within statsmodels.tsa is
 
  - stattools : empirical properties and tests, acf, pacf, granger-causality,
-   adf unit root test, ljung-box test and others.
+   adf unit root test, kpss test, bds test, ljung-box test and others.
  - ar_model : univariate autoregressive process, estimation with conditional
    and exact maximum likelihood and conditional least-squares
  - arima_model : univariate ARMA process, estimation with conditional
@@ -41,6 +45,8 @@ structure is within statsmodels.tsa is
  - tsatools : additional helper functions, to create arrays of lagged variables,
    construct regressors for trend, detrend and similar.
  - filters : helper function for filtering time series
+ - regime_switching : Markov switching dynamic regression and autoregression
+   models
 
 
 
@@ -71,10 +77,15 @@ Descriptive Statistics and Tests
    stattools.ccf
    stattools.periodogram
    stattools.adfuller
+   stattools.kpss
+   stattools.coint
+   stattools.bds
    stattools.q_stat
    stattools.grangercausalitytests
    stattools.levinson_durbin
    stattools.arma_order_select_ic
+   x13.x13_arima_select_order
+   x13.x13_arima_analysis
 
 Estimation
 """"""""""
@@ -111,6 +122,8 @@ Autogressive Moving-Average Processes (ARMA) and Kalman Filter
 Vector Autogressive Processes (VAR)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
+.. currentmodule:: statsmodels.tsa
+
 .. autosummary::
    :toctree: generated/
 
@@ -131,14 +144,41 @@ estimation are available for vector autoregressive processes.
 .. autosummary::
    :toctree: generated/
 
+   vector_ar.var_model.LagOrderResults
    vector_ar.var_model.VAR
    vector_ar.var_model.VARProcess
    vector_ar.var_model.VARResults
    vector_ar.irf.IRAnalysis
    vector_ar.var_model.FEVD
+   vector_ar.hypothesis_test_results.HypothesisTestResults
+   vector_ar.hypothesis_test_results.CausalityTestResults
+   vector_ar.hypothesis_test_results.NormalityTestResults
+   vector_ar.hypothesis_test_results.WhitenessTestResults
    vector_ar.dynamic.DynamicVAR
 
 .. seealso:: tutorial :ref:`VAR documentation <var>`
+
+Vector Error Correction Models (VECM)
+"""""""""""""""""""""""""""""""""""""
+
+.. autosummary::
+   :toctree: generated/
+
+   vector_ar.vecm.select_order
+   vector_ar.vecm.select_coint_rank
+   vector_ar.vecm.CointRankResults
+   vector_ar.vecm.VECM
+   vector_ar.vecm.VECMResults
+   vector_ar.vecm.coint_johansen
+
+Regime switching models
+"""""""""""""""""""""""
+
+.. autosummary::
+   :toctree: generated/
+
+   regime_switching.markov_regression.MarkovRegression
+   regime_switching.markov_autoregression.MarkovAutoregression
 
 ARMA Process
 """"""""""""
@@ -189,15 +229,17 @@ Time Series Filters
    filters.filtertools.miso_lfilter
    filters.filtertools.fftconvolve3
    filters.filtertools.fftconvolveinv
+   seasonal.seasonal_decompose
 
 
 TSA Tools
 """""""""
 
+.. currentmodule:: statsmodels.tsa
+
 .. autosummary::
    :toctree: generated/
 
-   tsatools.add_constant
    tsatools.add_trend
    tsatools.detrend
    tsatools.lagmat

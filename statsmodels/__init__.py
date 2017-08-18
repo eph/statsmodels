@@ -1,81 +1,57 @@
-#
-# models - Statistical Models
-#
 from __future__ import print_function
+
 __docformat__ = 'restructuredtext'
 
-#from version import __version__
-#from info import __doc__
+from distutils.version import LooseVersion
+import os
+import sys
 
-#from regression import *
-#from genmod.glm import *
-#from robust.rlm import *
-#from discrete.discretemod import *
-#import tsa
-#from tools.tools import add_constant, chain_dot
-#import base.model
-#import tools.tools
-#import datasets
-#import glm.families
-#import stats.stattools
-#import iolib
+from warnings import simplefilter
+from statsmodels.tools.sm_exceptions import (ConvergenceWarning, CacheWriteWarning,
+                                             IterationLimitWarning, InvalidTestWarning)
 
-from numpy import errstate
-#__all__ = filter(lambda s:not s.startswith('_'),dir())
+simplefilter("always", (ConvergenceWarning, CacheWriteWarning,
+                        IterationLimitWarning, InvalidTestWarning))
 
-from numpy.testing import Tester
-class NoseWrapper(Tester):
-    '''
-    This is simply a monkey patch for numpy.testing.Tester.
+debug_warnings = False
 
-    It allows extra_argv to be changed from its default None to ['--exe'] so
-    that the tests can be run the same across platforms.  It also takes kwargs
-    that are passed to numpy.errstate to suppress floating point warnings.
-    '''
-    def test(self, label='fast', verbose=1, extra_argv=['--exe'], doctests=False,
-            coverage=False, **kwargs):
-        ''' Run tests for module using nose
+if debug_warnings:
+    import sys, warnings
 
-        %(test_header)s
-        doctests : boolean
-            If True, run doctests in module, default False
-        coverage : boolean
-            If True, report coverage of NumPy code, default False
-            (Requires the coverage module:
-             http://nedbatchelder.com/code/modules/coverage.html)
-        kwargs
-            Passed to numpy.errstate.  See its documentation for details.
-        '''
+    warnings.simplefilter("default")
+    # use the following to raise an exception for debugging specific warnings
+    # warnings.filterwarnings("error", message=".*integer.*")
+    if (sys.version_info[0] >= 3):
+        # ResourceWarning doesn't exist in python 2
+        # we have currently many ResourceWarnings in the datasets on python 3.4
+        warnings.simplefilter("ignore", ResourceWarning)
 
-        # cap verbosity at 3 because nose becomes *very* verbose beyond that
-        verbose = min(verbose, 3)
 
-        from numpy.testing import utils
-        utils.verbose = verbose
+class PytestTester(object):
+    def __init__(self):
+        f = sys._getframe(1)
+        package_path = f.f_locals.get('__file__', None)
+        if package_path is None:
+            raise ValueError('Unable to determine path')
+        self.package_path = os.path.dirname(package_path)
+        self.package_name = f.f_locals.get('__name__', None)
 
-        if doctests:
-            print("Running unit tests and doctests for %s" % self.package_name)
-        else:
-            print("Running unit tests for %s" % self.package_name)
+    def __call__(self, extra_args=None):
+        try:
+            import pytest
+            if not LooseVersion(pytest.__version__) >= LooseVersion('3.0'):
+                raise ImportError
+            extra_args = ['--tb=short','--disable-pytest-warnings'] if extra_args is None else extra_args
+            cmd = [self.package_path] + extra_args
+            print('Running pytest ' + ' '.join(cmd))
+            pytest.main(cmd)
+        except ImportError:
+            raise ImportError('pytest>=3 required to run the test')
 
-        self._show_system_info()
 
-        # reset doctest state on every run
-        import doctest
-        doctest.master = None
-
-        argv, plugins = self.prepare_test_args(label, verbose, extra_argv,
-                                               doctests, coverage)
-        from numpy.testing.noseclasses import NumpyTestProgram
-        from warnings import simplefilter #, catch_warnings
-        with errstate(**kwargs):
-##            with catch_warnings():
-            simplefilter('ignore', category=DeprecationWarning)
-            t = NumpyTestProgram(argv=argv, exit=False, plugins=plugins)
-        return t.result
-test = NoseWrapper().test
+test = PytestTester()
 
 try:
-	from .version import version as __version__
+    from .version import version as __version__
 except ImportError:
-	__version__ = 'not-yet-built'
+    __version__ = 'not-yet-built'

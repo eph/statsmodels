@@ -17,6 +17,7 @@ Hardin, J.W. and Hilbe, J.M. 2007.  "Generalized Linear Models and
 McCullagh, P. and Nelder, J.A.  1989.  "Generalized Linear Models." 2nd ed.
     Chapman & Hall, Boca Rotan.
 """
+from statsmodels.compat.numpy import np_matrix_rank
 
 import numpy as np
 from . import families
@@ -25,23 +26,33 @@ from statsmodels.tools.decorators import cache_readonly, resettable_cache
 import statsmodels.base.model as base
 import statsmodels.regression.linear_model as lm
 import statsmodels.base.wrapper as wrap
-from statsmodels.compat.numpy import np_matrix_rank
+import statsmodels.regression._tools as reg_tools
 
-from statsmodels.tools.sm_exceptions import PerfectSeparationError
+
+from statsmodels.graphics._regressionplots_doc import (
+    _plot_added_variable_doc,
+    _plot_partial_residuals_doc,
+    _plot_ceres_residuals_doc)
+
+# need import in module instead of lazily to copy `__doc__`
+from . import _prediction as pred
+
+from statsmodels.tools.sm_exceptions import (PerfectSeparationError,
+                                             DomainWarning)
 
 __all__ = ['GLM']
 
 
-def _check_convergence(criterion, iteration, tol, maxiter):
-    return not ((np.fabs(criterion[iteration] - criterion[iteration-1]) > tol)
-                and iteration <= maxiter)
+def _check_convergence(criterion, iteration, atol, rtol):
+    return np.allclose(criterion[iteration], criterion[iteration + 1],
+                       atol=atol, rtol=rtol)
 
 
 class GLM(base.LikelihoodModel):
     __doc__ = """
     Generalized Linear Models class
 
-    GLM inherits from statsmodels.LikelihoodModel
+    GLM inherits from statsmodels.base.model.LikelihoodModel
 
     Parameters
     -----------
@@ -52,12 +63,32 @@ class GLM(base.LikelihoodModel):
     exog : array-like
         A nobs x k array where `nobs` is the number of observations and `k`
         is the number of regressors. An intercept is not included by default
-        and should be added by the user. See `statsmodels.tools.add_constant`.
+        and should be added by the user (models specified using a formula
+        include an intercept by default). See `statsmodels.tools.add_constant`.
     family : family class instance
         The default is Gaussian.  To specify the binomial distribution
         family = sm.family.Binomial()
         Each family can take a link instance as an argument.  See
         statsmodels.family.family for more information.
+    offset : array-like or None
+        An offset to be included in the model.  If provided, must be
+        an array whose length is the number of rows in exog.
+    exposure : array-like or None
+        Log(exposure) will be added to the linear prediction in the model. Exposure
+        is only valid if the log link is used. If provided, it must be an array
+        with the same length as endog.
+    freq_weights : array-like
+        1d array of frequency weights. The default is None. If None is selected
+        or a blank value, then the algorithm will replace with an array of 1's
+        with length equal to the endog.
+        WARNING: Using weights is not verified yet for all possible options
+        and results, see Notes.
+    var_weights : array-like
+        1d array of variance (analytic) weights. The default is None. If None
+        is selected or a blank value, then the algorithm will replace with an
+        array of 1's with length equal to the endog.
+        WARNING: Using weights is not verified yet for all possible options
+        and results, see Notes.
     %(extra_params)s
 
     Attributes
@@ -72,8 +103,14 @@ class GLM(base.LikelihoodModel):
         See Parameters.
     family : family class instance
         A pointer to the distribution family of the model.
+    freq_weights : array
+        See Parameters.
+    var_weights : array
+        See Parameters.
     mu : array
         The estimated mean response of the transformed variable.
+    n_trials : array
+        See Parameters.
     normalized_cov_params : array
         `p` x `p` normalized covariance of the design / exogenous data.
     pinv_wexog : array
@@ -84,6 +121,7 @@ class GLM(base.LikelihoodModel):
         The scaling used for fitting the model.  Available after fit is called.
     weights : array
         The value of the weights after the last iteration of fit.
+
 
     Examples
     --------
@@ -111,7 +149,9 @@ class GLM(base.LikelihoodModel):
 
     See also
     --------
-    statsmodels.families.*
+    statsmodels.genmod.families.family.Family
+    :ref:`families`
+    :ref:`links`
 
     Notes
     -----
@@ -130,8 +170,58 @@ class GLM(base.LikelihoodModel):
     Endog and exog are references so that if the data they refer to are already
     arrays and these arrays are changed, endog and exog will change.
 
+    Statsmodels supports two separte definitions of weights: frequency weights
+    and variance weights.
 
-    **Attributes**
+    Frequency weights produce the same results as repeating observations by the
+    frequencies (if those are integers). Frequency weights will keep the number
+    of observations consistent, but the degrees of freedom will change to
+    reflect the new weights.
+
+    Variance weights (referred to in other packages as analytic weights) are
+    used when ``endog`` represents an an average or mean. This relies on the
+    assumption that that the inverse variance scales proportionally to the
+    weight--an observation that is deemed more credible should have less
+    variance and therefore have more weight. For the ``Poisson`` family--which
+    assumes that occurences scale proportionally with time--a natural practice
+    would be to use the amount of time as the variance weight and set ``endog``
+    to be a rate (occurrances per period of time). Similarly, using a
+    compound Poisson family, namely ``Tweedie``, makes a similar assumption
+    about the rate (or frequency) of occurences having variance proportional to
+    time.
+
+    Both frequency and variance weights are verified for all basic results with
+    nonrobust or heteroscedasticity robust ``cov_type``. Other robust
+    covariance types have not yet been verified, and at least the small sample
+    correction is currently not based on the correct total frequency count.
+
+    Currently, all residuals are not weighted by frequency, although they may
+    incorporate ``n_trials`` for ``Binomial`` and ``var_weights``
+
+    +---------------+----------------------------------+
+    | Residual Type | Applicable weights               |
+    +===============+==================================+
+    | Anscombe      | Unweighted                       |
+    +---------------+----------------------------------+
+    | Deviance      | ``var_weights``                  |
+    +---------------+----------------------------------+
+    | Pearson       | ``var_weights`` and ``n_trials`` |
+    +---------------+----------------------------------+
+    | Reponse       | ``n_trials``                     |
+    +---------------+----------------------------------+
+    | Working       | ``n_trials``                     |
+    +---------------+----------------------------------+
+
+    WARNING: Loglikelihood, llf, deviance, etc. is not valid in models where
+    scale is equal to 1 (i.e., ``Binomial``, ``NegativeBinomial``, and
+    ``Poisson``). If variance weights are specified, then results such as
+    ``loglike`` and ``deviance`` are based on a quasi-likelihood
+    interpretation. The loglikelihood is not correctly specified in this case,
+    and statistics based on it, such AIC or likelihood ratio tests, are not\
+    appropriate.
+
+    Attributes
+    ----------
 
     df_model : float
         Model degrees of freedom is equal to p - 1, where p is the number
@@ -141,16 +231,24 @@ class GLM(base.LikelihoodModel):
         Residual degrees of freedom is equal to the number of observation n
         minus the number of regressors p.
     endog : array
-        See above.  Note that endog is a reference to the data so that if
+        See above.  Note that `endog` is a reference to the data so that if
         data is already an array and it is changed, then `endog` changes
         as well.
     exposure : array-like
         Include ln(exposure) in model with coefficient constrained to 1. Can
         only be used if the link is the logarithm function.
     exog : array
-        See above.  Note that endog is a reference to the data so that if
-        data is already an array and it is changed, then `endog` changes
+        See above.  Note that `exog` is a reference to the data so that if
+        data is already an array and it is changed, then `exog` changes
         as well.
+    freq_weights : array
+        See above. Note that `freq_weights` is a reference to the data so that
+        if data is already an array and it is changed, then `freq_weights`
+        changes as well.
+    var_weights : array
+        See above. Note that `var_weights` is a reference to the data so that
+        if data is already an array and it is changed, then `var_weights`
+        changes as well.
     iteration : int
         The number of iterations that fit has run.  Initialized at 0.
     family : family class instance
@@ -158,10 +256,16 @@ class GLM(base.LikelihoodModel):
         statsmodels.families.  Default is Gaussian.
     mu : array
         The mean response of the transformed variable.  `mu` is the value of
-        the inverse of the link function at eta, where eta is the linear
-        predicted value of the WLS fit of the transformed variable.  `mu` is
-        only available after fit is called.  See
+        the inverse of the link function at lin_pred, where lin_pred is the
+        linear predicted value of the WLS fit of the transformed variable.
+        `mu` is only available after fit is called.  See
         statsmodels.families.family.fitted of the distribution family for more
+        information.
+    n_trials : array
+        See above. Note that `n_trials` is a reference to the data so that if
+        data is already an array and it is changed, then `n_trials` changes
+        as well. `n_trials` is the number of binomial trials and only available
+        with that distribution. See statsmodels.families.Binomial for more
         information.
     normalized_cov_params : array
         The p x p normalized covariance of the design / exogenous data.
@@ -186,24 +290,68 @@ class GLM(base.LikelihoodModel):
         the specific distribution weighting functions.
     """ % {'extra_params' : base._missing_param_doc}
 
-    def __init__(self, endog, exog, family=None, offset=None, exposure=None,
-                 missing='none'):
-        self._check_inputs(family, offset, exposure, endog)
+    def __init__(self, endog, exog, family=None, offset=None,
+                 exposure=None, freq_weights=None, var_weights=None,
+                 missing='none', **kwargs):
+
+        if (family is not None) and not isinstance(family.link, tuple(family.safe_links)):
+            import warnings
+            warnings.warn("The %s link function does not respect the domain of the %s family." %
+                          (family.link.__class__.__name__, family.__class__.__name__),
+                          DomainWarning)
+
+        if exposure is not None:
+            exposure = np.log(exposure)
+        if offset is not None:  # this should probably be done upstream
+            offset = np.asarray(offset)
+
+        if freq_weights is not None:
+            freq_weights = np.asarray(freq_weights)
+        if var_weights is not None:
+            var_weights = np.asarray(var_weights)
+
+        self.freq_weights = freq_weights
+        self.var_weights = var_weights
+
         super(GLM, self).__init__(endog, exog, missing=missing,
-                                  offset=self.offset, exposure=self.exposure)
+                                  offset=offset, exposure=exposure,
+                                  freq_weights=freq_weights,
+                                  var_weights=var_weights, **kwargs)
+        self._check_inputs(family, self.offset, self.exposure, self.endog,
+                           self.freq_weights, self.var_weights)
         if offset is None:
             delattr(self, 'offset')
         if exposure is None:
             delattr(self, 'exposure')
-        #things to remove_data
-        self._data_attr.extend(['weights', 'pinv_wexog', 'mu', 'data_weights',
-                                ])
+
+        self.nobs = self.endog.shape[0]
+
+        # things to remove_data
+        self._data_attr.extend(['weights', 'pinv_wexog', 'mu', 'freq_weights',
+                                'var_weights', 'iweights', '_offset_exposure',
+                                'n_trials'])
+        # register kwds for __init__, offset and exposure are added by super
+        self._init_keys.append('family')
+
+        self._setup_binomial()
+
+        # Construct a combined offset/exposure term.  Note that
+        # exposure has already been logged if present.
+        offset_exposure = 0.
+        if hasattr(self, 'offset'):
+            offset_exposure = self.offset
+        if hasattr(self, 'exposure'):
+            offset_exposure = offset_exposure + self.exposure
+        self._offset_exposure = offset_exposure
+
+        self.scaletype = None
+
 
     def initialize(self):
         """
         Initialize a generalized linear model.
         """
-        #TODO: intended for public use?
+        # TODO: intended for public use?
         self.history = {'fittedvalues' : [],
                         'params' : [np.inf],
                         'deviance' : [np.inf]}
@@ -212,59 +360,349 @@ class GLM(base.LikelihoodModel):
         self.normalized_cov_params = np.dot(self.pinv_wexog,
                                             np.transpose(self.pinv_wexog))
 
-        self.df_model = np_matrix_rank(self.exog)-1
-        self.df_resid = self.exog.shape[0] - np_matrix_rank(self.exog)
+        self.df_model = np_matrix_rank(self.exog) - 1
 
-    def _check_inputs(self, family, offset, exposure, endog):
+
+        if (self.freq_weights is not None) and \
+           (self.freq_weights.shape[0] == self.endog.shape[0]):
+            self.wnobs = self.freq_weights.sum()
+            self.df_resid = self.wnobs - self.df_model - 1
+        else:
+            self.wnobs = self.exog.shape[0]
+            self.df_resid = self.exog.shape[0] - self.df_model - 1
+
+    def _check_inputs(self, family, offset, exposure, endog, freq_weights,
+                      var_weights):
 
         # Default family is Gaussian
         if family is None:
             family = families.Gaussian()
         self.family = family
 
-        if exposure is not None and not isinstance(self.family.link, families.links.Log):
-            raise ValueError("exposure can only be used with the log link function")
+        if exposure is not None:
+            if not isinstance(self.family.link, families.links.Log):
+                raise ValueError("exposure can only be used with the log "
+                                 "link function")
+            elif exposure.shape[0] != endog.shape[0]:
+                raise ValueError("exposure is not the same length as endog")
 
         if offset is not None:
-            offset = np.asarray(offset)
             if offset.shape[0] != endog.shape[0]:
                 raise ValueError("offset is not the same length as endog")
-        self.offset = offset
 
-        if exposure is not None:
-            exposure = np.asarray(exposure)
-            if exposure.shape[0] != endog.shape[0]:
-                raise ValueError("exposure is not the same length as endog")
-            exposure = np.log(exposure)
-        self.exposure = exposure
+        if freq_weights is not None:
+            if freq_weights.shape[0] != endog.shape[0]:
+                raise ValueError("freq weights not the same length as endog")
+            if len(freq_weights.shape) > 1:
+                raise ValueError("freq weights has too many dimensions")
 
-    def score(self, params):
-        """
-        Score matrix.  Not yet implemeneted
-        """
-        raise NotImplementedError
+        # internal flag to store whether freq_weights were not None
+        self._has_freq_weights = (self.freq_weights is not None)
+        if self.freq_weights is None:
+            self.freq_weights = np.ones((endog.shape[0]))
+            # TODO: check do we want to keep None as sentinel for freq_weights
 
-    def loglike(self, *args):
-        """
-        Loglikelihood function.
+        if np.shape(self.freq_weights) == () and self.freq_weights > 1:
+            self.freq_weights = (self.freq_weights *
+                                 np.ones((endog.shape[0])))
 
-        Each distribution family has its own loglikelihood function.
-        See statsmodels.families.family
-        """
-        return self.family.loglike(*args)
+        if var_weights is not None:
+            if var_weights.shape[0] != endog.shape[0]:
+                raise ValueError("var weights not the same length as endog")
+            if len(var_weights.shape) > 1:
+                raise ValueError("var weights has too many dimensions")
 
-    def information(self, params):
+        # internal flag to store whether var_weights were not None
+        self._has_var_weights = (var_weights is not None)
+        if var_weights is None:
+            self.var_weights = np.ones((endog.shape[0]))
+            # TODO: check do we want to keep None as sentinel for var_weights
+        self.iweights = np.asarray(self.freq_weights * self.var_weights)
+
+    def _get_init_kwds(self):
+        # this is a temporary fixup because exposure has been transformed
+        # see #1609, copied from discrete_model.CountModel
+        kwds = super(GLM, self)._get_init_kwds()
+        if 'exposure' in kwds and kwds['exposure'] is not None:
+            kwds['exposure'] = np.exp(kwds['exposure'])
+        return kwds
+
+    def loglike_mu(self, mu, scale=1.):
         """
-        Fisher information matrix.  Not yet implemented.
+        Evaluate the log-likelihood for a generalized linear model.
         """
-        raise NotImplementedError
+        return self.family.loglike(mu, self.endog, self.exog, self.iweights,
+                                   scale)
+
+    def loglike(self, params, scale=None):
+        """
+        Evaluate the log-likelihood for a generalized linear model.
+        """
+        lin_pred = np.dot(self.exog, params) + self._offset_exposure
+        expval = self.family.link.inverse(lin_pred)
+        if scale is None:
+            scale = self.estimate_scale(expval)
+        llf = self.family.loglike(self.endog, expval, self.iweights, scale)
+        return llf
+
+    def score_obs(self, params, scale=None):
+        """score first derivative of the loglikelihood for each observation.
+
+        Parameters
+        ----------
+        params : ndarray
+            parameter at which score is evaluated
+        scale : None or float
+            If scale is None, then the default scale will be calculated.
+            Default scale is defined by `self.scaletype` and set in fit.
+            If scale is not None, then it is used as a fixed scale.
+
+        Returns
+        -------
+        score_obs : ndarray, 2d
+            The first derivative of the loglikelihood function evaluated at
+            params for each observation.
+
+        """
+
+        score_factor = self.score_factor(params, scale=scale)
+        return score_factor[:, None] * self.exog
+
+
+    def score(self, params, scale=None):
+        """score, first derivative of the loglikelihood function
+
+        Parameters
+        ----------
+        params : ndarray
+            parameter at which score is evaluated
+        scale : None or float
+            If scale is None, then the default scale will be calculated.
+            Default scale is defined by `self.scaletype` and set in fit.
+            If scale is not None, then it is used as a fixed scale.
+
+        Returns
+        -------
+        score : ndarray_1d
+            The first derivative of the loglikelihood function calculated as
+            the sum of `score_obs`
+
+        """
+        return self.score_obs(params, scale=scale).sum(0)
+
+
+    def score_factor(self, params, scale=None):
+        """weights for score for each observation
+
+        This can be considered as score residuals.
+
+        Parameters
+        ----------
+        params : ndarray
+            parameter at which score is evaluated
+        scale : None or float
+            If scale is None, then the default scale will be calculated.
+            Default scale is defined by `self.scaletype` and set in fit.
+            If scale is not None, then it is used as a fixed scale.
+
+        Returns
+        -------
+        score_factor : ndarray_1d
+            A 1d weight vector used in the calculation of the score_obs.
+            The score_obs are obtained by `score_factor[:, None] * exog`
+
+        """
+        mu = self.predict(params)
+        if scale is None:
+            scale = self.estimate_scale(mu)
+
+        score_factor = (self.endog - mu) / self.family.link.deriv(mu)
+        score_factor /= self.family.variance(mu)
+        score_factor *= self.iweights
+
+        if not scale == 1:
+            score_factor /= scale
+
+        return score_factor
+
+
+    def hessian_factor(self, params, scale=None, observed=True):
+        """Weights for calculating Hessian
+
+        Parameters
+        ----------
+        params : ndarray
+            parameter at which Hessian is evaluated
+        scale : None or float
+            If scale is None, then the default scale will be calculated.
+            Default scale is defined by `self.scaletype` and set in fit.
+            If scale is not None, then it is used as a fixed scale.
+        observed : bool
+            If True, then the observed Hessian is returned. If false then the
+            expected information matrix is returned.
+
+        Returns
+        -------
+        hessian_factor : ndarray, 1d
+            A 1d weight vector used in the calculation of the Hessian.
+            The hessian is obtained by `(exog.T * hessian_factor).dot(exog)`
+        """
+
+        # calculating eim_factor
+        mu = self.predict(params)
+        if scale is None:
+            scale = self.estimate_scale(mu)
+
+        eim_factor = 1 / (self.family.link.deriv(mu)**2 *
+                          self.family.variance(mu))
+        eim_factor *= self.iweights * self.n_trials
+
+        if not observed:
+            if not scale == 1:
+                eim_factor /= scale
+            return eim_factor
+
+        # calculating oim_factor, eim_factor is with scale=1
+
+        score_factor = self.score_factor(params, scale=1.)
+        if eim_factor.ndim > 1 or score_factor.ndim > 1:
+            raise RuntimeError('something wrong')
+
+        tmp = self.family.variance(mu) * self.family.link.deriv2(mu)
+        tmp += self.family.variance.deriv(mu) * self.family.link.deriv(mu)
+
+        tmp = score_factor * eim_factor * tmp
+        # correct for duplicatee iweights in oim_factor and score_factor
+        tmp /= self.iweights
+        oim_factor = eim_factor * (1 + tmp)
+
+        if tmp.ndim > 1:
+            raise RuntimeError('something wrong')
+
+        if not scale == 1:
+            oim_factor /= scale
+
+        return oim_factor
+
+    def hessian(self, params, scale=None, observed=None):
+        """Hessian, second derivative of loglikelihood function
+
+        Parameters
+        ----------
+        params : ndarray
+            parameter at which Hessian is evaluated
+        scale : None or float
+            If scale is None, then the default scale will be calculated.
+            Default scale is defined by `self.scaletype` and set in fit.
+            If scale is not None, then it is used as a fixed scale.
+        observed : bool
+            If True, then the observed Hessian is returned (default).
+            If false then the expected information matrix is returned.
+
+        Returns
+        -------
+        hessian : ndarray
+            Hessian, i.e. observed information, or expected information matrix.
+        """
+        if observed is None:
+            if hasattr(self, '_optim_hessian') and (self._optim_hessian == 'eim'):
+                observed = False
+            else:
+                observed = True
+
+        factor = self.hessian_factor(params, scale=scale, observed=observed)
+        hess = -np.dot(self.exog.T * factor, self.exog)
+        return hess
+
+
+    def information(self, params, scale=None):
+        """
+        Fisher information matrix.
+        """
+        return self.hessian(params, scale=scale, observed=False)
+
+
+    def score_test(self, params_constrained, k_constraints=None,
+                   exog_extra=None, observed=True):
+        """score test for restrictions or for omitted variables
+
+        The covariance matrix for the score is based on the Hessian, i.e.
+        observed information matrix or optionally on the expected information
+        matrix..
+
+        Parameters
+        ----------
+        params_constrained : array_like
+            estimated parameter of the restricted model. This can be the
+            parameter estimate for the current when testing for omitted
+            variables.
+        k_constraints : int or None
+            Number of constraints that were used in the estimation of params
+            restricted relative to the number of exog in the model.
+            This must be provided if no exog_extra are given. If exog_extra is
+            not None, then k_constraints is assumed to be zero if it is None.
+        exog_extra : None or array_like
+            Explanatory variables that are jointly tested for inclusion in the
+            model, i.e. omitted variables.
+        observed : bool
+            If True, then the observed Hessian is used in calculating the
+            covariance matrix of the score. If false then the expected
+            information matrix is used.
+
+        Returns
+        -------
+        chi2_stat : float
+            chisquare statistic for the score test
+        p-value : float
+            P-value of the score test based on the chisquare distribution.
+        df : int
+            Degrees of freedom used in the p-value calculation. This is equal
+            to the number of constraints.
+
+        Notes
+        -----
+        not yet verified for case with scale not equal to 1.
+
+        """
+
+        if exog_extra is None:
+            if k_constraints is None:
+                raise ValueError('if exog_extra is None, then k_constraints'
+                                 'needs to be given')
+
+            score = self.score(params_constrained)
+            hessian = self.hessian(params_constrained, observed=observed)
+
+        else:
+            #exog_extra = np.asarray(exog_extra)
+            if k_constraints is None:
+                k_constraints = 0
+
+            ex = np.column_stack((self.exog, exog_extra))
+            k_constraints += ex.shape[1] - self.exog.shape[1]
+
+            score_factor = self.score_factor(params_constrained)
+            score = (score_factor[:, None] * ex).sum(0)
+            hessian_factor = self.hessian_factor(params_constrained,
+                                                 observed=observed)
+            hessian = -np.dot(ex.T * hessian_factor, ex)
+
+
+        from scipy import stats
+        # TODO check sign, why minus?
+        chi2stat = -score.dot(np.linalg.solve(hessian, score[:, None]))
+        pval = stats.chi2.sf(chi2stat, k_constraints)
+        # return a stats results instance instead?  Contrast?
+        return chi2stat, pval, k_constraints
+
 
     def _update_history(self, tmp_result, mu, history):
         """
         Helper method to update history during iterative fit.
         """
         history['params'].append(tmp_result.params)
-        history['deviance'].append(self.family.deviance(self.endog, mu))
+        history['deviance'].append(self.family.deviance(self.endog, mu,
+                                                        self.iweights))
         return history
 
     def estimate_scale(self, mu):
@@ -289,15 +727,16 @@ class GLM(base.LikelihoodModel):
 
         See also
         --------
-        statsmodels.glm.fit for more information
+        statsmodels.genmod.generalized_linear_model.GLM.fit for more information
         """
         if not self.scaletype:
             if isinstance(self.family, (families.Binomial, families.Poisson)):
                 return 1.
             else:
                 resid = self.endog - mu
-                return ((np.power(resid, 2) / self.family.variance(mu)).sum()
-                        / self.df_resid)
+                return ((self.iweights * (np.power(resid, 2) /
+                         self.family.variance(mu))).sum() /
+                        (self.df_resid))
 
         if isinstance(self.scaletype, float):
             return np.array(self.scaletype)
@@ -305,10 +744,13 @@ class GLM(base.LikelihoodModel):
         if isinstance(self.scaletype, str):
             if self.scaletype.lower() == 'x2':
                 resid = self.endog - mu
-                return ((np.power(resid, 2) / self.family.variance(mu)).sum()
-                        / self.df_resid)
+                return ((self.iweights * (np.power(resid, 2) /
+                         self.family.variance(mu))).sum() /
+                        (self.df_resid))
             elif self.scaletype.lower() == 'dev':
-                return self.family.deviance(self.endog, mu)/self.df_resid
+                return (self.family.deviance(self.endog, mu,
+                                             self.iweights) /
+                        (self.df_resid))
             else:
                 raise ValueError("Scale %s with type %s not understood" %
                                  (self.scaletype, type(self.scaletype)))
@@ -316,6 +758,44 @@ class GLM(base.LikelihoodModel):
         else:
             raise ValueError("Scale %s with type %s not understood" %
                              (self.scaletype, type(self.scaletype)))
+
+    def estimate_tweedie_power(self, mu, method='brentq', low=1.01, high=5.):
+        """
+        Tweedie specific function to estimate scale and the variance parameter.
+        The variance parameter is also referred to as p, xi, or shape.
+
+        Parameters
+        ----------
+        mu : array-like
+            Fitted mean response variable
+        method : str, defaults to 'brentq'
+            Scipy optimizer used to solve the Pearson equation. Only brentq
+            currently supported.
+        low : float, optional
+            Low end of the bracketing interval [a,b] to be used in the search
+            for the power. Defaults to 1.01.
+        high : float, optional
+            High end of the bracketing interval [a,b] to be used in the search
+            for the power. Defaults to 5.
+
+        Returns
+        -------
+        power : float
+            The estimated shape or power
+        """
+        if method == 'brentq':
+            from scipy.optimize import brentq
+
+            def psi_p(power, mu):
+                scale = ((self.iweights * (self.endog - mu) ** 2 /
+                          (mu ** power)).sum() / self.df_resid)
+                return (np.sum(self.iweights * ((self.endog - mu) ** 2 /
+                               (scale * (mu ** power)) - 1) *
+                               np.log(mu)) / self.freq_weights.sum())
+            power = brentq(psi_p, low, high, args=(mu))
+        else:
+            raise NotImplementedError('Only brentq can currently be used')
+        return power
 
     def predict(self, params, exog=None, exposure=None, offset=None,
                 linear=False):
@@ -354,7 +834,7 @@ class GLM(base.LikelihoodModel):
 
         # Use fit offset if appropriate
         if offset is None and exog is None and hasattr(self, 'offset'):
-            offset = getattr(self, 'offset')
+            offset = self.offset
         elif offset is None:
             offset = 0.
 
@@ -365,7 +845,7 @@ class GLM(base.LikelihoodModel):
         # Use fit exposure if appropriate
         if exposure is None and exog is None and hasattr(self, 'exposure'):
             # Already logged
-            exposure = getattr(self, 'exposure')
+            exposure = self.exposure
         elif exposure is None:
             exposure = 0.
         else:
@@ -380,18 +860,85 @@ class GLM(base.LikelihoodModel):
         else:
             return self.family.fitted(linpred)
 
+    def get_distribution(self, params, scale=1, exog=None, exposure=None,
+                         offset=None):
+        """
+        Returns a random number generator for the predictive distribution.
+
+        Parameters
+        ----------
+        params : array-like
+            The model parameters.
+        scale : scalar
+            The scale parameter.
+        exog : array-like
+            The predictor variable matrix.
+
+        Returns
+        -------
+        gen
+            Frozen random number generator object.  Use the ``rvs`` method to
+            generate random values.
+
+        Notes
+        -----
+        Due to the behavior of ``scipy.stats.distributions objects``, the
+        returned random number generator must be called with ``gen.rvs(n)``
+        where ``n`` is the number of observations in the data set used
+        to fit the model.  If any other value is used for ``n``, misleading
+        results will be produced.
+        """
+
+        fit = self.predict(params, exog, exposure, offset, linear=False)
+
+        import scipy.stats.distributions as dist
+
+        if isinstance(self.family, families.Gaussian):
+            return dist.norm(loc=fit, scale=np.sqrt(scale))
+
+        elif isinstance(self.family, families.Binomial):
+            return dist.binom(n=1, p=fit)
+
+        elif isinstance(self.family, families.Poisson):
+            return dist.poisson(mu=fit)
+
+        elif isinstance(self.family, families.Gamma):
+            alpha = fit / float(scale)
+            return dist.gamma(alpha, scale=scale)
+
+        else:
+            raise ValueError("get_distribution not implemented for %s" % self.family.name)
+
+    def _setup_binomial(self):
+        # this checks what kind of data is given for Binomial.
+        # family will need a reference to endog if this is to be removed from
+        # preprocessing
+        self.n_trials = np.ones((self.endog.shape[0]))  # For binomial
+        if isinstance(self.family, families.Binomial):
+            tmp = self.family.initialize(self.endog, self.freq_weights)
+            self.endog = tmp[0]
+            self.n_trials = tmp[1]
+
     def fit(self, start_params=None, maxiter=100, method='IRLS', tol=1e-8,
-            scale=None):
+            scale=None, cov_type='nonrobust', cov_kwds=None, use_t=None,
+            full_output=True, disp=False, max_start_irls=3, **kwargs):
         """
         Fits a generalized linear model for a given family.
 
-        parameters
+        Parameters
         ----------
+        start_params : array-like, optional
+            Initial guess of the solution for the loglikelihood maximization.
+            The default is family-specific and is given by the
+            ``family.starting_mu(endog)``. If start_params is given then the
+            initial mean will be calculated as ``np.dot(exog, start_params)``.
         maxiter : int, optional
             Default is 100.
         method : string
-            Default is 'IRLS' for iteratively reweighted least squares.  This
-            is currently the only method available for GLM fit.
+            Default is 'IRLS' for iteratively reweighted least squares.
+            Otherwise gradient optimization is used.
+        tol : float
+            Convergence tolerance.  Default is 1e-8.
         scale : string or float, optional
             `scale` can be 'X2', 'dev', or a float
             The default value is None, which uses `X2` for Gamma, Gaussian,
@@ -399,44 +946,137 @@ class GLM(base.LikelihoodModel):
             `X2` is Pearson's chi-square divided by `df_resid`.
             The default is 1 for the Binomial and Poisson families.
             `dev` is the deviance divided by df_resid
-        tol : float
-            Convergence tolerance.  Default is 1e-8.
-        start_params : array-like, optional
-            Initial guess of the solution for the loglikelihood maximization.
-            The default is family-specific and is given by the
-            ``family.starting_mu(endog)``. If start_params is given then the
-            initial mean will be calculated as ``np.dot(exog, start_params)``.
+        cov_type : string
+            The type of parameter estimate covariance matrix to compute.
+        cov_kwds : dict-like
+            Extra arguments for calculating the covariance of the parameter
+            estimates.
+        use_t : bool
+            If True, the Student t-distribution is used for inference.
+        full_output : bool, optional
+            Set to True to have all available output in the Results object's
+            mle_retvals attribute. The output is dependent on the solver.
+            See LikelihoodModelResults notes section for more information.
+            Not used if methhod is IRLS.
+        disp : bool, optional
+            Set to True to print convergence messages.  Not used if method is
+            IRLS.
+        max_start_irls : int
+            The number of IRLS iterations used to obtain starting
+            values for gradient optimization.  Only relevant if
+            `method` is set to something other than 'IRLS'.
+
+        If IRLS fitting used, the following additional parameters are
+        available:
+
+        atol : float, optional
+            The absolute tolerance criterion that must be satisfied. Defaults
+            to ``tol``. Convergence is attained when:
+            :math:`rtol * prior + atol > abs(current - prior)`
+        rtol : float, optional
+            The relative tolerance criterion that must be satisfied. Defaults
+            to 0 which means ``rtol`` is not used. Convergence is attained
+            when:
+            :math:`rtol * prior + atol > abs(current - prior)`
+        tol_criterion : str, optional
+            Defaults to ``'deviance'``. Can optionally be ``'params'``.
+
+        If a scipy optimizer is used, the following additional parameter is
+        available:
+
+        optim_hessian : {'eim', 'oim'}, optional
+            When 'oim', the default, the observed Hessian is used in fitting.
+            'eim' is the expected Hessian. This may provide more stable fits,
+            but adds assumption that the Hessian is correctly specified.
         """
-        endog = self.endog
-        if endog.ndim > 1 and endog.shape[1] == 2:
-            data_weights = endog.sum(1)  # weights are total trials
-        else:
-            data_weights = np.ones((endog.shape[0]))
-        self.data_weights = data_weights
-        if np.shape(self.data_weights) == () and self.data_weights > 1:
-            self.data_weights = self.data_weights * np.ones((endog.shape[0]))
         self.scaletype = scale
-        if isinstance(self.family, families.Binomial):
-        # this checks what kind of data is given for Binomial.
-        # family will need a reference to endog if this is to be removed from
-        # preprocessing
-            self.endog = self.family.initialize(self.endog)
 
-        # Construct a combined offset/exposure term.  Note that
-        # exposure has already been logged if present.
-        offset = 0.
-        if hasattr(self, 'offset'):
-            offset = self.offset.copy()
-        if hasattr(self, 'exposure'):
-            offset += self.exposure
+        if method.lower() == "irls":
+            return self._fit_irls(start_params=start_params, maxiter=maxiter,
+                                  tol=tol, scale=scale, cov_type=cov_type,
+                                  cov_kwds=cov_kwds, use_t=use_t, **kwargs)
+        else:
+            self._optim_hessian = kwargs.get('optim_hessian')
+            fit_ = self._fit_gradient(start_params=start_params,
+                                      method=method,
+                                      maxiter=maxiter,
+                                      tol=tol, scale=scale,
+                                      full_output=full_output,
+                                      disp=disp, cov_type=cov_type,
+                                      cov_kwds=cov_kwds, use_t=use_t,
+                                      max_start_irls=max_start_irls,
+                                      **kwargs)
+            self._optim_hessian = None
+            return fit_
 
+    def _fit_gradient(self, start_params=None, method="newton",
+                      maxiter=100, tol=1e-8, full_output=True,
+                      disp=True, scale=None, cov_type='nonrobust',
+                      cov_kwds=None, use_t=None, max_start_irls=3,
+                      **kwargs):
+        """
+        Fits a generalized linear model for a given family iteratively
+        using the scipy gradient optimizers.
+        """
+
+        if (max_start_irls > 0) and (start_params is None):
+            irls_rslt = self._fit_irls(start_params=start_params, maxiter=max_start_irls,
+                                       tol=tol, scale=scale, cov_type=cov_type,
+                                       cov_kwds=cov_kwds, use_t=use_t, **kwargs)
+            start_params = irls_rslt.params
+
+        rslt = super(GLM, self).fit(start_params=start_params, tol=tol,
+                                    maxiter=maxiter, full_output=full_output,
+                                    method=method, disp=disp, **kwargs)
+
+        mu = self.predict(rslt.params)
+        scale = self.estimate_scale(mu)
+
+        if rslt.normalized_cov_params is None:
+            cov_p = None
+        else:
+            cov_p = rslt.normalized_cov_params / scale
+
+        glm_results = GLMResults(self, rslt.params,
+                                 cov_p,
+                                 scale,
+                                 cov_type=cov_type, cov_kwds=cov_kwds,
+                                 use_t=use_t)
+
+        # TODO: iteration count is not always available
+        history = {'iteration': 0}
+        if full_output:
+            glm_results.mle_retvals = rslt.mle_retvals
+            if 'iterations' in rslt.mle_retvals:
+                history['iteration'] = rslt.mle_retvals['iterations']
+        glm_results.method = method
+        glm_results.fit_history = history
+
+        return GLMResultsWrapper(glm_results)
+
+
+    def _fit_irls(self, start_params=None, maxiter=100, tol=1e-8,
+                  scale=None, cov_type='nonrobust', cov_kwds=None,
+                  use_t=None, **kwargs):
+        """
+        Fits a generalized linear model for a given family using
+        iteratively reweighted least squares (IRLS).
+        """
+        atol = kwargs.get('atol')
+        rtol = kwargs.get('rtol', 0.)
+        tol_criterion = kwargs.get('tol_criterion', 'deviance')
+        atol = tol if atol is None else atol
+
+        endog = self.endog
         wlsexog = self.exog
         if start_params is None:
+            start_params = np.zeros(self.exog.shape[1], np.float)
             mu = self.family.starting_mu(self.endog)
+            lin_pred = self.family.predict(mu)
         else:
-            mu = self.family.fitted(np.dot(wlsexog, start_params))
-        eta = self.family.predict(mu)
-        dev = self.family.deviance(self.endog, mu)
+            lin_pred = np.dot(wlsexog, start_params) + self._offset_exposure
+            mu = self.family.fitted(lin_pred)
+        dev = self.family.deviance(self.endog, mu, self.iweights)
         if np.isnan(dev):
             raise ValueError("The first guess on the deviance function "
                              "returned a nan.  This could be a boundary "
@@ -444,31 +1084,182 @@ class GLM(base.LikelihoodModel):
 
         # first guess on the deviance is assumed to be scaled by 1.
         # params are none to start, so they line up with the deviance
-        history = dict(params=[None, start_params], deviance=[np.inf, dev])
-        iteration = 0
-        converged = 0
-        criterion = history['deviance']
-        while not converged:
-            self.weights = data_weights*self.family.weights(mu)
-            wlsendog = (eta + self.family.link.deriv(mu) * (self.endog-mu)
-                        - offset)
-            wls_results = lm.WLS(wlsendog, wlsexog, self.weights).fit()
-            eta = np.dot(self.exog, wls_results.params) + offset
-            mu = self.family.fitted(eta)
+        history = dict(params=[np.inf, start_params], deviance=[np.inf, dev])
+        converged = False
+        criterion = history[tol_criterion]
+        # This special case is used to get the likelihood for a specific
+        # params vector.
+        if maxiter == 0:
+            mu = self.family.fitted(lin_pred)
+            self.scale = self.estimate_scale(mu)
+            wls_results = lm.RegressionResults(self, start_params, None)
+            iteration = 0
+        for iteration in range(maxiter):
+            self.weights = (self.iweights * self.n_trials *
+                            self.family.weights(mu))
+            wlsendog = (lin_pred + self.family.link.deriv(mu) * (self.endog-mu)
+                        - self._offset_exposure)
+            wls_results = reg_tools._MinimalWLS(wlsendog, wlsexog, self.weights).fit(method='lstsq')
+            lin_pred = np.dot(self.exog, wls_results.params) + self._offset_exposure
+            mu = self.family.fitted(lin_pred)
             history = self._update_history(wls_results, mu, history)
             self.scale = self.estimate_scale(mu)
-            iteration += 1
             if endog.squeeze().ndim == 1 and np.allclose(mu - endog, 0):
                 msg = "Perfect separation detected, results not available"
                 raise PerfectSeparationError(msg)
-            converged = _check_convergence(criterion, iteration, tol, maxiter)
+            converged = _check_convergence(criterion, iteration + 1, atol,
+                                           rtol)
+            if converged:
+                break
         self.mu = mu
+
+        if maxiter > 0:  # Only if iterative used
+            wls_results = lm.WLS(wlsendog, wlsexog, self.weights).fit()
+
         glm_results = GLMResults(self, wls_results.params,
                                  wls_results.normalized_cov_params,
-                                 self.scale)
-        history['iteration'] = iteration
+                                 self.scale,
+                                 cov_type=cov_type, cov_kwds=cov_kwds,
+                                 use_t=use_t)
+
+        glm_results.method = "IRLS"
+        history['iteration'] = iteration + 1
         glm_results.fit_history = history
+        glm_results.converged = converged
         return GLMResultsWrapper(glm_results)
+
+
+    def fit_regularized(self, method="elastic_net", alpha=0.,
+                        start_params=None, refit=False, **kwargs):
+        """
+        Return a regularized fit to a linear regression model.
+
+        Parameters
+        ----------
+        method :
+            Only the `elastic_net` approach is currently implemented.
+        alpha : scalar or array-like
+            The penalty weight.  If a scalar, the same penalty weight
+            applies to all variables in the model.  If a vector, it
+            must have the same length as `params`, and contains a
+            penalty weight for each coefficient.
+        start_params : array-like
+            Starting values for `params`.
+        refit : bool
+            If True, the model is refit using only the variables that
+            have non-zero coefficients in the regularized fit.  The
+            refitted model is not regularized.
+
+        Returns
+        -------
+        An array, or a GLMResults object of the same type returned by `fit`.
+
+        Notes
+        -----
+        The penalty is the ``elastic net`` penalty, which is a
+        combination of L1 and L2 penalties.
+
+        The function that is minimized is: 
+        
+        .. math::
+
+            -loglike/n + alpha*((1-L1\_wt)*|params|_2^2/2 + L1\_wt*|params|_1)
+
+        where :math:`|*|_1` and :math:`|*|_2` are the L1 and L2 norms.
+
+        Post-estimation results are based on the same data used to
+        select variables, hence may be subject to overfitting biases.
+
+        The elastic_net method uses the following keyword arguments:
+
+        maxiter : int
+            Maximum number of iterations
+        L1_wt  : float
+            Must be in [0, 1].  The L1 penalty has weight L1_wt and the
+            L2 penalty has weight 1 - L1_wt.
+        cnvrg_tol : float
+            Convergence threshold for line searches
+        zero_tol : float
+            Coefficients below this threshold are treated as zero.
+        """
+        from statsmodels.base.elastic_net import fit_elasticnet
+
+        if method != "elastic_net":
+            raise ValueError("method for fit_regularied must be elastic_net")
+
+        defaults = {"maxiter" : 50, "L1_wt" : 1, "cnvrg_tol" : 1e-10,
+                    "zero_tol" : 1e-10}
+        defaults.update(kwargs)
+
+        result = fit_elasticnet(self, method=method,
+                                alpha=alpha,
+                                start_params=start_params,
+                                refit=refit,
+                                **defaults)
+
+        self.mu = self.predict(result.params)
+        self.scale = self.estimate_scale(self.mu)
+
+        return result
+
+
+    def fit_constrained(self, constraints, start_params=None, **fit_kwds):
+        """fit the model subject to linear equality constraints
+
+        The constraints are of the form   `R params = q`
+        where R is the constraint_matrix and q is the vector of
+        constraint_values.
+
+        The estimation creates a new model with transformed design matrix,
+        exog, and converts the results back to the original parameterization.
+
+
+        Parameters
+        ----------
+        constraints : formula expression or tuple
+            If it is a tuple, then the constraint needs to be given by two
+            arrays (constraint_matrix, constraint_value), i.e. (R, q).
+            Otherwise, the constraints can be given as strings or list of
+            strings.
+            see t_test for details
+        start_params : None or array_like
+            starting values for the optimization. `start_params` needs to be
+            given in the original parameter space and are internally
+            transformed.
+        **fit_kwds : keyword arguments
+            fit_kwds are used in the optimization of the transformed model.
+
+        Returns
+        -------
+        results : Results instance
+
+        """
+
+        from patsy import DesignInfo
+        from statsmodels.base._constraints import fit_constrained
+
+        # same pattern as in base.LikelihoodModel.t_test
+        lc = DesignInfo(self.exog_names).linear_constraint(constraints)
+        R, q = lc.coefs, lc.constants
+
+        # TODO: add start_params option, need access to tranformation
+        #       fit_constrained needs to do the transformation
+        params, cov, res_constr = fit_constrained(self, R, q,
+                                                  start_params=start_params,
+                                                  fit_kwds=fit_kwds)
+        #create dummy results Instance, TODO: wire up properly
+        res = self.fit(start_params=params, maxiter=0) # we get a wrapper back
+        res._results.params = params
+        res._results.normalized_cov_params = cov
+        k_constr = len(q)
+        res._results.df_resid += k_constr
+        res._results.df_model -= k_constr
+        res._results.constraints = lc
+        res._results.k_constr = k_constr
+        res._results.results_constrained = res_constr
+        # TODO: the next is not the best. history should bin in results
+        res._results.model.history = res_constr.model.history
+        return res
 
 
 class GLMResults(base.LikelihoodModelResults):
@@ -556,18 +1347,24 @@ class GLMResults(base.LikelihoodModelResults):
 
     See Also
     --------
-    statsmodels.LikelihoodModelResults
+    statsmodels.base.model.LikelihoodModelResults
     """
 
-    def __init__(self, model, params, normalized_cov_params, scale):
+    def __init__(self, model, params, normalized_cov_params, scale,
+                 cov_type='nonrobust', cov_kwds=None, use_t=None):
         super(GLMResults, self).__init__(model, params,
                                          normalized_cov_params=
                                          normalized_cov_params, scale=scale)
         self.family = model.family
         self._endog = model.endog
         self.nobs = model.endog.shape[0]
-        self.mu = model.mu
-        self._data_weights = model.data_weights
+        self._freq_weights = model.freq_weights
+        self._var_weights = model.var_weights
+        self._iweights = model.iweights
+        if isinstance(self.family, families.Binomial):
+            self._n_trials = self.model.n_trials
+        else:
+            self._n_trials = 1
         self.df_resid = model.df_resid
         self.df_model = model.df_model
         self.pinv_wexog = model.pinv_wexog
@@ -575,39 +1372,87 @@ class GLMResults(base.LikelihoodModelResults):
         # are these intermediate results needed or can we just
         # call the model's attributes?
 
+        # for remove data and pickle without large arrays
+        self._data_attr.extend(['results_constrained', '_freq_weights',
+                                '_var_weights', '_iweights'])
+        self.data_in_cache = getattr(self, 'data_in_cache', [])
+        self.data_in_cache.extend(['null', 'mu'])
+        self._data_attr_model = getattr(self, '_data_attr_model', [])
+        self._data_attr_model.append('mu')
+
+        # robust covariance
+        from statsmodels.base.covtype import get_robustcov_results
+        if use_t is None:
+            self.use_t = False    # TODO: class default
+        else:
+            self.use_t = use_t
+
+        # temporary warning
+        ct = (cov_type == 'nonrobust') or (cov_type.startswith('HC'))
+        if self.model._has_freq_weights and not ct:
+            import warnings
+            from statsmodels.tools.sm_exceptions import SpecificationWarning
+            warnings.warn('cov_type not fully supported with freq_weights',
+                          SpecificationWarning)
+
+        if self.model._has_var_weights and not ct:
+            import warnings
+            from statsmodels.tools.sm_exceptions import SpecificationWarning
+            warnings.warn('cov_type not fully supported with var_weights',
+                          SpecificationWarning)
+
+        if cov_type == 'nonrobust':
+            self.cov_type = 'nonrobust'
+            self.cov_kwds = {'description' : 'Standard Errors assume that the ' +
+                             'covariance matrix of the errors is correctly ' +
+                             'specified.'}
+
+        else:
+            if cov_kwds is None:
+                cov_kwds = {}
+            get_robustcov_results(self, cov_type=cov_type, use_self=True,
+                                  use_t=use_t, **cov_kwds)
+
     @cache_readonly
     def resid_response(self):
-        return self._data_weights * (self._endog-self.mu)
+        return self._n_trials * (self._endog-self.mu)
 
     @cache_readonly
     def resid_pearson(self):
-        return (np.sqrt(self._data_weights) * (self._endog-self.mu) /
+        return (np.sqrt(self._n_trials) * (self._endog-self.mu) *
+                np.sqrt(self._var_weights) /
                 np.sqrt(self.family.variance(self.mu)))
 
     @cache_readonly
     def resid_working(self):
-        val = (self.resid_response / self.family.link.deriv(self.mu))
-        val *= self._data_weights
+        # Isn't self.resid_response is already adjusted by _n_trials?
+        val = (self.resid_response * self.family.link.deriv(self.mu))
+        val *= self._n_trials
         return val
 
     @cache_readonly
     def resid_anscombe(self):
-        return self.family.resid_anscombe(self._endog, self.mu)
+        return self.family.resid_anscombe(self._endog, self.fittedvalues)
 
     @cache_readonly
     def resid_deviance(self):
-        return self.family.resid_dev(self._endog, self.mu)
+        dev = self.family.resid_dev(self._endog, self.fittedvalues)
+        return dev * np.sqrt(self._var_weights)
 
     @cache_readonly
     def pearson_chi2(self):
         chisq = (self._endog - self.mu)**2 / self.family.variance(self.mu)
-        chisq *= self._data_weights
+        chisq *= self._iweights * self._n_trials
         chisqsum = np.sum(chisq)
         return chisqsum
 
     @cache_readonly
     def fittedvalues(self):
         return self.mu
+
+    @cache_readonly
+    def mu(self):
+        return self.model.predict(self.params)
 
     @cache_readonly
     def null(self):
@@ -620,27 +1465,30 @@ class GLMResults(base.LikelihoodModelResults):
         if hasattr(model, 'exposure'):
             kwargs['exposure'] = model.exposure
         if len(kwargs) > 0:
-            return GLM(endog, exog, family=self.family, **kwargs).fit().mu
+            return GLM(endog, exog, family=self.family, **kwargs).fit().fittedvalues
         else:
-            wls_model = lm.WLS(endog, exog, weights=self._data_weights)
+            wls_model = lm.WLS(endog, exog,
+                               weights=self._iweights * self._n_trials)
             return wls_model.fit().fittedvalues
 
     @cache_readonly
     def deviance(self):
-        return self.family.deviance(self._endog, self.mu)
+        return self.family.deviance(self._endog, self.mu, self._iweights)
 
     @cache_readonly
     def null_deviance(self):
-        return self.family.deviance(self._endog, self.null)
+        return self.family.deviance(self._endog, self.null, self._iweights)
+
+    @cache_readonly
+    def llnull(self):
+        return self.family.loglike(self._endog, self.null, self._iweights,
+                                   scale=self.scale)
 
     @cache_readonly
     def llf(self):
         _modelfamily = self.family
-        if isinstance(_modelfamily, families.NegativeBinomial):
-            XB = np.dot(self.model.exog, self.params)
-            val = _modelfamily.loglike(self.model.endog, fittedvalues=XB)
-        else:
-            val = _modelfamily.loglike(self._endog, self.mu, scale=self.scale)
+        val = _modelfamily.loglike(self._endog, self.mu, self._iweights,
+                                   scale=self.scale)
         return val
 
     @cache_readonly
@@ -649,7 +1497,35 @@ class GLMResults(base.LikelihoodModelResults):
 
     @cache_readonly
     def bic(self):
-        return self.deviance - self.df_resid*np.log(self.nobs)
+        return (self.deviance -
+                (self.model.wnobs - self.df_model - 1) *
+                np.log(self.model.wnobs))
+
+
+    def get_prediction(self, exog=None, exposure=None, offset=None,
+                       transform=True, linear=False,
+                       row_labels=None):
+
+        import statsmodels.regression._prediction as linpred
+
+        pred_kwds = {'exposure': exposure, 'offset': offset, 'linear': True}
+
+        # two calls to a get_prediction duplicates exog generation if patsy
+        res_linpred = linpred.get_prediction(self, exog=exog, transform=transform,
+                              row_labels=row_labels, pred_kwds=pred_kwds)
+
+        pred_kwds['linear'] = False
+        res = pred.get_prediction_glm(self, exog=exog, transform=transform,
+                                      row_labels=row_labels,
+                                      linpred=res_linpred,
+                                      link=self.model.family.link,
+                                      pred_kwds=pred_kwds)
+
+        return res
+
+
+    get_prediction.__doc__ = pred.get_prediction_glm.__doc__
+
 
     def remove_data(self):
         #GLM has alias/reference in result instance
@@ -659,9 +1535,51 @@ class GLMResults(base.LikelihoodModelResults):
 
         #TODO: what are these in results?
         self._endog = None
-        self._data_weights = None
+        self._freq_weights = None
+        self._var_weights = None
+        self._iweights = None
+        self._n_trials = None
 
     remove_data.__doc__ = base.LikelihoodModelResults.remove_data.__doc__
+
+    def plot_added_variable(self, focus_exog, resid_type=None,
+                            use_glm_weights=True, fit_kwargs=None,
+                            ax=None):
+        # Docstring attached below
+
+        from statsmodels.graphics.regressionplots import plot_added_variable
+
+        fig = plot_added_variable(self, focus_exog,
+                                  resid_type=resid_type,
+                                  use_glm_weights=use_glm_weights,
+                                  fit_kwargs=fit_kwargs, ax=ax)
+
+        return fig
+
+    plot_added_variable.__doc__ = _plot_added_variable_doc % {
+        'extra_params_doc' : ''}
+
+    def plot_partial_residuals(self, focus_exog, ax=None):
+        # Docstring attached below
+
+        from statsmodels.graphics.regressionplots import plot_partial_residuals
+
+        return plot_partial_residuals(self, focus_exog, ax=ax)
+
+    plot_partial_residuals.__doc__ = _plot_partial_residuals_doc % {
+        'extra_params_doc' : ''}
+
+    def plot_ceres_residuals(self, focus_exog, frac=0.66, cond_means=None,
+                             ax=None):
+        # Docstring attached below
+
+        from statsmodels.graphics.regressionplots import plot_ceres_residuals
+
+        return plot_ceres_residuals(self, focus_exog, frac,
+                                    cond_means=cond_means, ax=ax)
+
+    plot_ceres_residuals.__doc__ = _plot_ceres_residuals_doc % {
+        'extra_params_doc' : ''}
 
     def summary(self, yname=None, xname=None, title=None, alpha=.05):
         """
@@ -696,7 +1614,7 @@ class GLMResults(base.LikelihoodModelResults):
                     ('Model:', None),
                     ('Model Family:', [self.family.__class__.__name__]),
                     ('Link Function:', [self.family.link.__class__.__name__]),
-                    ('Method:', ['IRLS']),
+                    ('Method:', [self.method]),
                     ('Date:', None),
                     ('Time:', None),
                     ('No. Iterations:',
@@ -721,7 +1639,11 @@ class GLMResults(base.LikelihoodModelResults):
         smry.add_table_2cols(self, gleft=top_left, gright=top_right,  # [],
                              yname=yname, xname=xname, title=title)
         smry.add_table_params(self, yname=yname, xname=xname, alpha=alpha,
-                              use_t=True)
+                              use_t=self.use_t)
+
+        if hasattr(self, 'constraints'):
+            smry.add_extra_txt(['Model has been estimated subject to linear '
+                          'equality constraints.'])
 
         #diagnostic table is not used yet:
         #smry.add_table_2cols(self, gleft=diagn_left, gright=diagn_right,
@@ -757,7 +1679,7 @@ class GLMResults(base.LikelihoodModelResults):
 
         See Also
         --------
-        statsmodels.iolib.summary.Summary : class to hold summary
+        statsmodels.iolib.summary2.Summary : class to hold summary
             results
 
         """
@@ -766,6 +1688,9 @@ class GLMResults(base.LikelihoodModelResults):
         smry = summary2.Summary()
         smry.add_base(results=self, alpha=alpha, float_format=float_format,
                       xname=xname, yname=yname, title=title)
+        if hasattr(self, 'constraints'):
+            smry.add_text('Model has been estimated subject to linear '
+                          'equality constraints.')
 
         return smry
 

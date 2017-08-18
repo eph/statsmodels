@@ -54,7 +54,7 @@ def _isdummy(X):
     >>> X[:,1:3] = np.random.randn(15,2)
     >>> ind = _isdummy(X)
     >>> ind
-    array([ True, False, False,  True,  True], dtype=bool)
+    array([0, 3, 4])
     """
     X = np.asarray(X)
     if X.ndim > 1:
@@ -70,9 +70,7 @@ def _isdummy(X):
 def _get_dummy_index(X, const_idx):
     dummy_ind = _isdummy(X)
     dummy = True
-    # adjust back for a constant because effects doesn't have one
-    if const_idx is not None:
-        dummy_ind[dummy_ind > const_idx] -= 1
+
     if dummy_ind.size == 0: # don't waste your time
         dummy = False
         dummy_ind = None # this gets passed to stand err func
@@ -93,7 +91,7 @@ def _iscount(X):
     >>> X[:,1:3] = np.random.randn(15,2)
     >>> ind = _iscount(X)
     >>> ind
-    array([ True, False, False,  True,  True], dtype=bool)
+    array([0, 3, 4])
     """
     X = np.asarray(X)
     remainder = np.logical_and(np.logical_and(np.all(X % 1. == 0, axis = 0),
@@ -107,9 +105,7 @@ def _iscount(X):
 def _get_count_index(X, const_idx):
     count_ind = _iscount(X)
     count = True
-    # adjust back for a constant because effects doesn't have one
-    if const_idx is not None:
-        count_ind[count_ind > const_idx] -= 1
+
     if count_ind.size == 0: # don't waste your time
         count = False
         count_ind = None # for stand err func
@@ -193,7 +189,7 @@ def _effects_at(effects, at):
 
 def _margeff_cov_params_dummy(model, cov_margins, params, exog, dummy_ind,
         method, J):
-    """
+    r"""
     Returns the Jacobian for discrete regressors for use in margeff_cov_params.
 
     For discrete regressors the marginal effect is
@@ -217,15 +213,16 @@ def _margeff_cov_params_dummy(model, cov_margins, params, exog, dummy_ind,
         if dfdb.ndim >= 2: # for overall
             dfdb = dfdb.mean(0)
         if J > 1:
-            K = dfdb.shape[1] / (J-1)
+            K = dfdb.shape[1] // (J-1)
             cov_margins[i::K, :] = dfdb
         else:
-            cov_margins[i, :] = dfdb # how each F changes with change in B
+            # dfdb could be too short if there are extra params, k_extra > 0
+            cov_margins[i, :len(dfdb)] = dfdb # how each F changes with change in B
     return cov_margins
 
 def _margeff_cov_params_count(model, cov_margins, params, exog, count_ind,
                              method, J):
-    """
+    r"""
     Returns the Jacobian for discrete regressors for use in margeff_cov_params.
 
     For discrete regressors the marginal effect is
@@ -251,7 +248,8 @@ def _margeff_cov_params_count(model, cov_margins, params, exog, count_ind,
             K = dfdb.shape[1] / (J-1)
             cov_margins[i::K, :] = dfdb
         else:
-            cov_margins[i, :] = dfdb # how each F changes with change in B
+            # dfdb could be too short if there are extra params, k_extra > 0
+            cov_margins[i, :len(dfdb)] = dfdb # how each F changes with change in B
     return cov_margins
 
 def margeff_cov_params(model, params, exog, cov_params, at, derivative,
@@ -446,18 +444,46 @@ class DiscreteMargins(object):
         -------
         frame : DataFrames
             A DataFrame summarizing the marginal effects.
+
+        Notes
+        -----
+        The dataframe is created on each call and not cached, as are the
+        tables build in `summary()`
         """
         _check_at_is_all(self.margeff_options)
-        from pandas import DataFrame
+        results = self.results
+        model = self.results.model
+        from pandas import DataFrame, MultiIndex
         names = [_transform_names[self.margeff_options['method']],
                                   'Std. Err.', 'z', 'Pr(>|z|)',
                                   'Conf. Int. Low', 'Cont. Int. Hi.']
         ind = self.results.model.exog.var(0) != 0 # True if not a constant
         exog_names = self.results.model.exog_names
+        k_extra = getattr(model, 'k_extra', 0)
+        if k_extra > 0:
+            exog_names = exog_names[:-k_extra]
         var_names = [name for i,name in enumerate(exog_names) if ind[i]]
-        table = np.column_stack((self.margeff, self.margeff_se, self.tvalues,
-                                 self.pvalues, self.conf_int(alpha)))
-        return DataFrame(table, columns=names, index=var_names)
+
+        if self.margeff.ndim == 2:
+            # MNLogit case
+            ci = self.conf_int(alpha)
+            table = np.column_stack([i.ravel("F") for i in
+                        [self.margeff, self.margeff_se, self.tvalues,
+                         self.pvalues, ci[:, 0, :], ci[:, 1, :]]])
+
+            _, yname_list = results._get_endog_name(model.endog_names,
+                                                        None, all=True)
+            ynames = np.repeat(yname_list, len(var_names))
+            xnames = np.tile(var_names, len(yname_list))
+            index = MultiIndex.from_tuples(list(zip(ynames, xnames)),
+                                           names=['endog', 'exog'])
+        else:
+            table = np.column_stack((self.margeff, self.margeff_se, self.tvalues,
+                                     self.pvalues, self.conf_int(alpha)))
+            index=var_names
+
+        return DataFrame(table, columns=names, index=index)
+
 
     @cache_readonly
     def pvalues(self):
@@ -519,7 +545,9 @@ class DiscreteMargins(object):
         # sigh, we really need to hold on to this in _data...
         _, const_idx = _get_const_index(model.exog)
         if const_idx is not None:
-            exog_names.pop(const_idx)
+            exog_names.pop(const_idx[0])
+        if getattr(model, 'k_extra', 0) > 0:
+            exog_names = exog_names[:-model.k_extra]
 
         J = int(getattr(model, "J", 1))
         if J > 1:
@@ -551,7 +579,7 @@ class DiscreteMargins(object):
                 tble.title = yname_list[eq]
                 # overwrite coef with method name
                 header = ['', _transform_names[method], 'std err', 'z',
-                        'P>|z|', '[%3.1f%% Conf. Int.]' % (100-alpha*100)]
+                        'P>|z|', '[' + str(alpha/2), str(1-alpha/2) + ']']
                 tble.insert_header_row(0, header)
                 #from IPython.core.debugger import Pdb; Pdb().set_trace()
                 table.append(tble)
@@ -562,7 +590,7 @@ class DiscreteMargins(object):
             table = summary_params(restup, yname=yname, xname=exog_names,
                     alpha=alpha, use_t=False, skip_header=True)
             header = ['', _transform_names[method], 'std err', 'z',
-                        'P>|z|', '[%3.1f%% Conf. Int.]' % (100-alpha*100)]
+                        'P>|z|', '[' + str(alpha/2), str(1-alpha/2) + ']']
             table.insert_header_row(0, header)
 
         smry.tables.append(table)
@@ -640,6 +668,8 @@ class DiscreteMargins(object):
         params = results.params
         exog = model.exog.copy() # copy because values are changed
         effects_idx, const_idx =  _get_const_index(exog)
+        if hasattr(model, 'k_extra') and model.k_extra > 0:
+            effects_idx = np.concatenate((effects_idx, np.zeros(model.k_extra, np.bool_)))
 
         if dummy:
             _check_discrete_args(at, method)
@@ -652,6 +682,10 @@ class DiscreteMargins(object):
             count_idx, count = _get_count_index(exog, const_idx)
         else:
             count_idx = None
+
+        # attach dummy_idx and cout_idx
+        self.dummy_idx = dummy_idx
+        self.count_idx = count_idx
 
         # get the exogenous variables
         exog = _get_margeff_exog(exog, at, atexog, effects_idx)
@@ -689,6 +723,9 @@ class DiscreteMargins(object):
                 self.margeff_cov = margeff_cov[effects_idx][:, effects_idx]
             else:
                 # don't care about at constant
+                # hack truncate effects_idx again if necessary
+                # if eyex, then effects is truncated to be without extra params
+                effects_idx = effects_idx[:len(effects)]
                 self.margeff_cov = margeff_cov[effects_idx][:, effects_idx]
                 self.margeff_se = margeff_se[effects_idx]
                 self.margeff = effects[effects_idx]

@@ -7,12 +7,14 @@ Author: Josef Perktold
 License: BSD-3
 """
 
-from statsmodels.tools.sm_exceptions import (IterationLimitWarning,
-    iteration_limit_doc)
 import numpy as np
 import scipy.sparse as sparse
 from scipy.sparse.linalg import svds
 from scipy.optimize import fminbound
+
+from statsmodels.tools.tools import Bunch
+from statsmodels.tools.sm_exceptions import (IterationLimitWarning,
+    iteration_limit_doc)
 
 def clip_evals(x, value=0): #threshold=0, value=0):
     evals, evecs = np.linalg.eigh(x)
@@ -362,6 +364,7 @@ def _spg_optim(func, grad, start, project, maxiter=1e4, M=10,
         df -= params
         if np.max(np.abs(df)) < ctol:
             return Bunch(**{"Converged": True, "params": params,
+                            "objective_values": obj_hist,
                             "Message": "Converged successfully"})
 
         # The line search direction
@@ -377,8 +380,9 @@ def _spg_optim(func, grad, start, project, maxiter=1e4, M=10,
                                                  gam=gam,
                                                  maxiter=maxiter_nmls)
         if alpha is None:
-            return Bunch(**{"Converged": False, "params": params, "Message":
-                            "Failed in nmono_linesearch"})
+            return Bunch(**{"Converged": False, "params": params,
+                            "objective_values": obj_hist,
+                            "Message": "Failed in nmono_linesearch"})
 
         obj_hist.append(fval)
         s = params1 - params
@@ -395,6 +399,7 @@ def _spg_optim(func, grad, start, project, maxiter=1e4, M=10,
         gval = gval1
 
     return Bunch(**{"Converged": False, "params": params,
+                    "objective_values": obj_hist,
                     "Message": "spg_optim did not converge"})
 
 
@@ -409,14 +414,6 @@ def _project_correlation_factors(X):
     ii = np.flatnonzero(nm > 1)
     if len(ii) > 0:
         X[ii,:] /= nm[ii][:, None]
-
-
-#TODO does this belong in a tools module somewhere?
-class Bunch(object):
-
-    def __init__(self, **kwargs):
-        self.__dict__.update(kwargs)
-
 
 
 class FactoredPSDMatrix:
@@ -613,6 +610,12 @@ def corr_nearest_factor(corr, rank, ctol=1e-6, lam_min=1e-30,
     thresholded correlation matrix with a PSD matrix as follows, where
     `corr` is the input correlation matrix.
 
+    >>> import numpy as np
+    >>> from statsmodels.stats.correlation_tools import corr_nearest_factor
+    >>> np.random.seed(1234)
+    >>> b = 1.5 - np.random.rand(10, 1)
+    >>> x = np.random.randn(100,1).dot(b.T) + np.random.randn(100,10)
+    >>> corr = np.corrcoef(x.T)
     >>> corr = corr * (np.abs(corr) >= 0.3)
     >>> rslt = corr_nearest_factor(corr, 3)
     """
@@ -725,6 +728,11 @@ def cov_nearest_factor_homog(cov, rank):
     is not positive semidefinite.  We can approximate a hard
     thresholded covariance matrix with a PSD matrix as follows:
 
+    >>> import numpy as np
+    >>> np.random.seed(1234)
+    >>> b = 1.5 - np.random.rand(10, 1)
+    >>> x = np.random.randn(100,1).dot(b.T) + np.random.randn(100,10)
+    >>> cov = np.cov(x)
     >>> cov = cov * (np.abs(cov) >= 0.3)
     >>> rslt = cov_nearest_factor_homog(cov, 3)
     """
@@ -778,17 +786,17 @@ def corr_thresholded(data, minabs=None, max_elt=1e7):
 
     Notes
     -----
-    This is an alternative to C = np.corrcoef(data); C *= (np.abs(C)
+    This is an alternative to C = np.corrcoef(data); C \*= (np.abs(C)
     >= absmin), suitable for very tall data matrices.
 
     If the data are jointly Gaussian, the marginal sampling
     distributions of the elements of the sample correlation matrix are
     approximately Gaussian with standard deviation 1 / sqrt(n).  The
-    default value of `minabs` is thus equal to 1 standard error, which
+    default value of ``minabs`` is thus equal to 1 standard error, which
     will set to zero approximately 68% of the estimated correlation
     coefficients for which the population value is zero.
 
-    No intermediate matrix with more than `max_elt` values will be
+    No intermediate matrix with more than ``max_elt`` values will be
     constructed.  However memory use could still be high if a large
     number of correlation values exceed `minabs` in magnitude.
 
@@ -802,7 +810,11 @@ def corr_thresholded(data, minabs=None, max_elt=1e7):
     and stored in sparse form, with all entries smaller than 0.3
     treated as 0.
 
-    >>> cmat = corr_thresholded(X, 0.3)
+    >>> import numpy as np
+    >>> np.random.seed(1234)
+    >>> b = 1.5 - np.random.rand(10, 1)
+    >>> x = np.random.randn(100,1).dot(b.T) + np.random.randn(100,10)
+    >>> cmat = corr_thresholded(x, 0.3)
     """
 
     nrow, ncol = data.shape

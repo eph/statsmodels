@@ -7,6 +7,7 @@ from statsmodels.tools import add_constant
 from statsmodels.datasets.longley import load, load_pandas
 
 import numpy.testing as npt
+from statsmodels.tools.testing import assert_equal
 from numpy.testing.utils import WarningManager
 
 
@@ -15,7 +16,7 @@ longley_formula = 'TOTEMP ~ GNPDEFL + GNP + UNEMP + ARMED + POP + YEAR'
 class CheckFormulaOLS(object):
 
     @classmethod
-    def setupClass(cls):
+    def setup_class(cls):
         cls.data = load()
 
     def test_endog_names(self):
@@ -45,26 +46,26 @@ class CheckFormulaOLS(object):
 
 class TestFormulaPandas(CheckFormulaOLS):
     @classmethod
-    def setupClass(cls):
+    def setup_class(cls):
         data = load_pandas().data
         cls.model = ols(longley_formula, data)
-        super(TestFormulaPandas, cls).setupClass()
+        super(TestFormulaPandas, cls).setup_class()
 
 
 class TestFormulaDict(CheckFormulaOLS):
     @classmethod
-    def setupClass(cls):
+    def setup_class(cls):
         data = dict((k, v.tolist()) for k, v in iteritems(load_pandas().data))
         cls.model = ols(longley_formula, data)
-        super(TestFormulaDict, cls).setupClass()
+        super(TestFormulaDict, cls).setup_class()
 
 
 class TestFormulaRecArray(CheckFormulaOLS):
     @classmethod
-    def setupClass(cls):
+    def setup_class(cls):
         data = load().data
         cls.model = ols(longley_formula, data)
-        super(TestFormulaRecArray, cls).setupClass()
+        super(TestFormulaRecArray, cls).setup_class()
 
 
 def test_tests():
@@ -88,7 +89,7 @@ def test_formula_labels():
     from pandas import read_table
     dta = read_table(dta, sep=" ")
     model = ols("prestige ~ income + education", dta).fit()
-    npt.assert_equal(model.fittedvalues.index, dta.index)
+    assert_equal(model.fittedvalues.index, dta.index)
 
 
 def test_formula_predict():
@@ -100,3 +101,25 @@ def test_formula_predict():
     results = ols(formula, dta).fit()
     npt.assert_almost_equal(results.fittedvalues.values,
                             results.predict(data.exog), 8)
+
+
+def test_formula_predict_series():
+    import pandas as pd
+    import pandas.util.testing as tm
+    data = pd.DataFrame({"y": [1, 2, 3], "x": [1, 2, 3]}, index=[5, 3, 1])
+    results = ols('y ~ x', data).fit()
+
+    result = results.predict(data)
+    expected = pd.Series([1., 2., 3.], index=[5, 3, 1])
+    tm.assert_series_equal(result, expected)
+
+    result = results.predict(data.x)
+    tm.assert_series_equal(result, expected)
+
+    result = results.predict(pd.Series([1, 2, 3], index=[1, 2, 3], name='x'))
+    expected = pd.Series([1., 2., 3.], index=[1, 2, 3])
+    tm.assert_series_equal(result, expected)
+
+    result = results.predict({"x": [1, 2, 3]})
+    expected = pd.Series([1., 2., 3.], index=[0, 1, 2])
+    tm.assert_series_equal(result, expected)

@@ -19,7 +19,7 @@ def _conf_set(F, alpha=.05):
     -----
     Based on the DKW inequality.
 
-    ..math:: P \left( \sup_x \left| F(x) - \hat(F)_n(X) \right| > \epsilon \right) \leq 2e^{-2n\epsilon^2}
+    .. math:: P \left( \sup_x \left| F(x) - \hat(F)_n(X) \right| > \epsilon \right) \leq 2e^{-2n\epsilon^2}
 
     References
     ----------
@@ -144,7 +144,7 @@ class ECDF(StepFunction):
 
 def monotone_fn_inverter(fn, x, vectorized=True, **keywords):
     """
-    Given a monotone function x (no checking is done to verify monotonicity)
+    Given a monotone function fn (no checking is done to verify monotonicity)
     and a set of x values, return an linearly interpolated approximation
     to its inverse from its values on x.
     """

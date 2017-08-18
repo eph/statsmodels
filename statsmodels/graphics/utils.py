@@ -1,5 +1,5 @@
 """Helper functions for graphics with Matplotlib."""
-from statsmodels.compat.python import lrange, range
+from statsmodels.compat.python import lrange, range, long
 
 __all__ = ['create_mpl_ax', 'create_mpl_fig']
 
@@ -98,7 +98,7 @@ def maybe_name_or_idx(idx, model):
     """
     if idx is None:
         idx = lrange(model.exog.shape[1])
-    if isinstance(idx, int):
+    if isinstance(idx, (int, long)):
         exog_name = model.exog_names[idx]
         exog_idx = idx
     # anticipate index as list and recurse
@@ -147,11 +147,3 @@ def annotate_axes(index, labels, points, offset_points, size, ax, **kwargs):
         ax.annotate(label, point, xytext=offset, textcoords="offset points",
                     size=size, **kwargs)
     return ax
-
-def maybe_tight_layout(fig):
-    import matplotlib as mpl
-    if mpl.__version__ >= '1.1':
-        # The tight_layout feature is not available before version 1.1
-        # It automatically pads the figure so labels do not get clipped.
-        fig.tight_layout()
-    return fig

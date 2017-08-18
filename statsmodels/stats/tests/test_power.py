@@ -9,28 +9,28 @@ Created on Sat Mar 09 08:44:49 2013
 
 Author: Josef Perktold
 """
-
+from statsmodels.compat.testing import SkipTest, skipif
 import copy
+import warnings
+from distutils.version import LooseVersion
+
 
 import numpy as np
 from numpy.testing import (assert_almost_equal, assert_allclose, assert_raises,
-                           assert_equal, assert_warns)
-
+                           assert_equal, assert_warns, dec)
+import scipy
 
 import statsmodels.stats.power as smp
-import warnings
-#from .test_weightstats import CheckPowerMixin
 from statsmodels.stats.tests.test_weightstats import Holder
 
-# for testing plots
-import nose
-from numpy.testing import dec
 try:
-    import matplotlib.pyplot as plt  #makes plt available for test functions
+    import matplotlib.pyplot as plt  # makes plt available for test functions
     have_matplotlib = True
 except ImportError:
     have_matplotlib = False
 
+
+SM_GT_10 = LooseVersion(scipy.__version__) >= '0.10'
 
 class CheckPowerMixin(object):
 
@@ -90,10 +90,11 @@ class CheckPowerMixin(object):
             #yield assert_allclose, result, value, 0.001, 0, key+' failed'
             kwds[key] = value  # reset dict
 
-    @dec.skipif(not have_matplotlib)
+    @skipif(not have_matplotlib, reason='matplotlib not available')
     def test_power_plot(self):
         if self.cls == smp.FTestPower:
-            raise nose.SkipTest('skip FTestPower plot_power')
+            raise SkipTest('skip FTestPower plot_power')
+        plt.close()
         fig = plt.figure()
         ax = fig.add_subplot(2,1,1)
         fig = self.cls().plot_power(dep_var='nobs',
@@ -109,7 +110,7 @@ class CheckPowerMixin(object):
                                   #alternative='larger',
                                   ax=ax, title='',
                                   **self.kwds_extra)
-        plt.close('all')
+        plt.close(fig)
 
 #''' test cases
 #one sample
@@ -126,7 +127,8 @@ class CheckPowerMixin(object):
 
 class TestTTPowerOneS1(CheckPowerMixin):
 
-    def __init__(self):
+    @classmethod
+    def setup_class(cls):
 
         #> p = pwr.t.test(d=1,n=30,sig.level=0.05,type="two.sample",alternative="two.sided")
         #> cat_items(p, prefix='tt_power2_1.')
@@ -139,16 +141,17 @@ class TestTTPowerOneS1(CheckPowerMixin):
         res2.note = 'NULL'
         res2.method = 'One-sample t test power calculation'
 
-        self.res2 = res2
-        self.kwds = {'effect_size': res2.d, 'nobs': res2.n,
+        cls.res2 = res2
+        cls.kwds = {'effect_size': res2.d, 'nobs': res2.n,
                      'alpha': res2.sig_level, 'power':res2.power}
-        self.kwds_extra = {}
-        self.cls = smp.TTestPower
+        cls.kwds_extra = {}
+        cls.cls = smp.TTestPower
 
 class TestTTPowerOneS2(CheckPowerMixin):
     # case with small power
 
-    def __init__(self):
+    @classmethod
+    def setup_class(cls):
 
         res2 = Holder()
         #> p = pwr.t.test(d=0.2,n=20,sig.level=0.05,type="one.sample",alternative="two.sided")
@@ -161,15 +164,16 @@ class TestTTPowerOneS2(CheckPowerMixin):
         res2.note = '''NULL'''
         res2.method = 'One-sample t test power calculation'
 
-        self.res2 = res2
-        self.kwds = {'effect_size': res2.d, 'nobs': res2.n,
+        cls.res2 = res2
+        cls.kwds = {'effect_size': res2.d, 'nobs': res2.n,
                      'alpha': res2.sig_level, 'power':res2.power}
-        self.kwds_extra = {}
-        self.cls = smp.TTestPower
+        cls.kwds_extra = {}
+        cls.cls = smp.TTestPower
 
 class TestTTPowerOneS3(CheckPowerMixin):
 
-    def __init__(self):
+    @classmethod
+    def setup_class(cls):
 
         res2 = Holder()
         #> p = pwr.t.test(d=1,n=30,sig.level=0.05,type="one.sample",alternative="greater")
@@ -182,15 +186,16 @@ class TestTTPowerOneS3(CheckPowerMixin):
         res2.note = 'NULL'
         res2.method = 'One-sample t test power calculation'
 
-        self.res2 = res2
-        self.kwds = {'effect_size': res2.d, 'nobs': res2.n,
+        cls.res2 = res2
+        cls.kwds = {'effect_size': res2.d, 'nobs': res2.n,
                      'alpha': res2.sig_level, 'power': res2.power}
-        self.kwds_extra = {'alternative': 'larger'}
-        self.cls = smp.TTestPower
+        cls.kwds_extra = {'alternative': 'larger'}
+        cls.cls = smp.TTestPower
 
 class TestTTPowerOneS4(CheckPowerMixin):
 
-    def __init__(self):
+    @classmethod
+    def setup_class(cls):
 
         res2 = Holder()
         #> p = pwr.t.test(d=0.05,n=20,sig.level=0.05,type="one.sample",alternative="greater")
@@ -203,16 +208,17 @@ class TestTTPowerOneS4(CheckPowerMixin):
         res2.note = '''NULL'''
         res2.method = 'One-sample t test power calculation'
 
-        self.res2 = res2
-        self.kwds = {'effect_size': res2.d, 'nobs': res2.n,
+        cls.res2 = res2
+        cls.kwds = {'effect_size': res2.d, 'nobs': res2.n,
                      'alpha': res2.sig_level, 'power': res2.power}
-        self.kwds_extra = {'alternative': 'larger'}
-        self.cls = smp.TTestPower
+        cls.kwds_extra = {'alternative': 'larger'}
+        cls.cls = smp.TTestPower
 
 class TestTTPowerOneS5(CheckPowerMixin):
     # case one-sided less, not implemented yet
 
-    def __init__(self):
+    @classmethod
+    def setup_class(cls):
 
         res2 = Holder()
         #> p = pwr.t.test(d=0.2,n=20,sig.level=0.05,type="one.sample",alternative="less")
@@ -225,16 +231,17 @@ class TestTTPowerOneS5(CheckPowerMixin):
         res2.note = '''NULL'''
         res2.method = 'One-sample t test power calculation'
 
-        self.res2 = res2
-        self.kwds = {'effect_size': res2.d, 'nobs': res2.n,
+        cls.res2 = res2
+        cls.kwds = {'effect_size': res2.d, 'nobs': res2.n,
                      'alpha': res2.sig_level, 'power': res2.power}
-        self.kwds_extra = {'alternative': 'smaller'}
-        self.cls = smp.TTestPower
+        cls.kwds_extra = {'alternative': 'smaller'}
+        cls.cls = smp.TTestPower
 
 class TestTTPowerOneS6(CheckPowerMixin):
     # case one-sided less, negative effect size, not implemented yet
 
-    def __init__(self):
+    @classmethod
+    def setup_class(cls):
 
         res2 = Holder()
         #> p = pwr.t.test(d=-0.2,n=20,sig.level=0.05,type="one.sample",alternative="less")
@@ -247,16 +254,17 @@ class TestTTPowerOneS6(CheckPowerMixin):
         res2.note = '''NULL'''
         res2.method = 'One-sample t test power calculation'
 
-        self.res2 = res2
-        self.kwds = {'effect_size': res2.d, 'nobs': res2.n,
+        cls.res2 = res2
+        cls.kwds = {'effect_size': res2.d, 'nobs': res2.n,
                      'alpha': res2.sig_level, 'power': res2.power}
-        self.kwds_extra = {'alternative': 'smaller'}
-        self.cls = smp.TTestPower
+        cls.kwds_extra = {'alternative': 'smaller'}
+        cls.cls = smp.TTestPower
 
 
 class TestTTPowerTwoS1(CheckPowerMixin):
 
-    def __init__(self):
+    @classmethod
+    def setup_class(cls):
 
         #> p = pwr.t.test(d=1,n=30,sig.level=0.05,type="two.sample",alternative="two.sided")
         #> cat_items(p, prefix='tt_power2_1.')
@@ -269,15 +277,16 @@ class TestTTPowerTwoS1(CheckPowerMixin):
         res2.note = 'n is number in *each* group'
         res2.method = 'Two-sample t test power calculation'
 
-        self.res2 = res2
-        self.kwds = {'effect_size': res2.d, 'nobs1': res2.n,
+        cls.res2 = res2
+        cls.kwds = {'effect_size': res2.d, 'nobs1': res2.n,
                      'alpha': res2.sig_level, 'power': res2.power, 'ratio': 1}
-        self.kwds_extra = {}
-        self.cls = smp.TTestIndPower
+        cls.kwds_extra = {}
+        cls.cls = smp.TTestIndPower
 
 class TestTTPowerTwoS2(CheckPowerMixin):
 
-    def __init__(self):
+    @classmethod
+    def setup_class(cls):
 
         res2 = Holder()
         #> p = pwr.t.test(d=0.1,n=20,sig.level=0.05,type="two.sample",alternative="two.sided")
@@ -290,15 +299,16 @@ class TestTTPowerTwoS2(CheckPowerMixin):
         res2.note = 'n is number in *each* group'
         res2.method = 'Two-sample t test power calculation'
 
-        self.res2 = res2
-        self.kwds = {'effect_size': res2.d, 'nobs1': res2.n,
+        cls.res2 = res2
+        cls.kwds = {'effect_size': res2.d, 'nobs1': res2.n,
                      'alpha': res2.sig_level, 'power': res2.power, 'ratio': 1}
-        self.kwds_extra = {}
-        self.cls = smp.TTestIndPower
+        cls.kwds_extra = {}
+        cls.cls = smp.TTestIndPower
 
 class TestTTPowerTwoS3(CheckPowerMixin):
 
-    def __init__(self):
+    @classmethod
+    def setup_class(cls):
 
         res2 = Holder()
         #> p = pwr.t.test(d=1,n=30,sig.level=0.05,type="two.sample",alternative="greater")
@@ -311,16 +321,17 @@ class TestTTPowerTwoS3(CheckPowerMixin):
         res2.note = 'n is number in *each* group'
         res2.method = 'Two-sample t test power calculation'
 
-        self.res2 = res2
-        self.kwds = {'effect_size': res2.d, 'nobs1': res2.n,
+        cls.res2 = res2
+        cls.kwds = {'effect_size': res2.d, 'nobs1': res2.n,
                      'alpha': res2.sig_level, 'power':res2.power, 'ratio': 1}
-        self.kwds_extra = {'alternative': 'larger'}
-        self.cls = smp.TTestIndPower
+        cls.kwds_extra = {'alternative': 'larger'}
+        cls.cls = smp.TTestIndPower
 
 class TestTTPowerTwoS4(CheckPowerMixin):
     # case with small power
 
-    def __init__(self):
+    @classmethod
+    def setup_class(cls):
 
         res2 = Holder()
         #> p = pwr.t.test(d=0.01,n=30,sig.level=0.05,type="two.sample",alternative="greater")
@@ -333,16 +344,17 @@ class TestTTPowerTwoS4(CheckPowerMixin):
         res2.note = 'n is number in *each* group'
         res2.method = 'Two-sample t test power calculation'
 
-        self.res2 = res2
-        self.kwds = {'effect_size': res2.d, 'nobs1': res2.n,
+        cls.res2 = res2
+        cls.kwds = {'effect_size': res2.d, 'nobs1': res2.n,
                      'alpha': res2.sig_level, 'power':res2.power}
-        self.kwds_extra = {'alternative': 'larger'}
-        self.cls = smp.TTestIndPower
+        cls.kwds_extra = {'alternative': 'larger'}
+        cls.cls = smp.TTestIndPower
 
 class TestTTPowerTwoS5(CheckPowerMixin):
     # case with unequal n, ratio>1
 
-    def __init__(self):
+    @classmethod
+    def setup_class(cls):
 
         res2 = Holder()
         #> p = pwr.t2n.test(d=0.1,n1=20, n2=30,sig.level=0.05,alternative="two.sided")
@@ -355,16 +367,17 @@ class TestTTPowerTwoS5(CheckPowerMixin):
         res2.alternative = 'two.sided'
         res2.method = 't test power calculation'
 
-        self.res2 = res2
-        self.kwds = {'effect_size': res2.d, 'nobs1': res2.n1,
+        cls.res2 = res2
+        cls.kwds = {'effect_size': res2.d, 'nobs1': res2.n1,
                      'alpha': res2.sig_level, 'power':res2.power, 'ratio': 1.5}
-        self.kwds_extra = {'alternative': 'two-sided'}
-        self.cls = smp.TTestIndPower
+        cls.kwds_extra = {'alternative': 'two-sided'}
+        cls.cls = smp.TTestIndPower
 
 class TestTTPowerTwoS6(CheckPowerMixin):
     # case with unequal n, ratio>1
 
-    def __init__(self):
+    @classmethod
+    def setup_class(cls):
 
         res2 = Holder()
         #> p = pwr.t2n.test(d=0.1,n1=20, n2=30,sig.level=0.05,alternative="greater")
@@ -377,11 +390,11 @@ class TestTTPowerTwoS6(CheckPowerMixin):
         res2.alternative = 'greater'
         res2.method = 't test power calculation'
 
-        self.res2 = res2
-        self.kwds = {'effect_size': res2.d, 'nobs1': res2.n1,
+        cls.res2 = res2
+        cls.kwds = {'effect_size': res2.d, 'nobs1': res2.n1,
                      'alpha': res2.sig_level, 'power':res2.power, 'ratio': 1.5}
-        self.kwds_extra = {'alternative': 'larger'}
-        self.cls = smp.TTestIndPower
+        cls.kwds_extra = {'alternative': 'larger'}
+        cls.cls = smp.TTestIndPower
 
 
 
@@ -421,8 +434,8 @@ def test_normal_power_explicit():
 
 class TestNormalIndPower1(CheckPowerMixin):
 
-    def __init__(self):
-
+    @classmethod
+    def setup_class(cls):
         #> example from above
         # results copied not directly from R
         res2 = Holder()
@@ -434,15 +447,16 @@ class TestNormalIndPower1(CheckPowerMixin):
         res2.note = 'NULL'
         res2.method = 'two sample power calculation'
 
-        self.res2 = res2
-        self.kwds = {'effect_size': res2.d, 'nobs1': res2.n,
+        cls.res2 = res2
+        cls.kwds = {'effect_size': res2.d, 'nobs1': res2.n,
                      'alpha': res2.sig_level, 'power':res2.power, 'ratio': 1}
-        self.kwds_extra = {}
-        self.cls = smp.NormalIndPower
+        cls.kwds_extra = {}
+        cls.cls = smp.NormalIndPower
 
 class TestNormalIndPower2(CheckPowerMixin):
 
-    def __init__(self):
+    @classmethod
+    def setup_class(cls):
         res2 = Holder()
         #> np = pwr.2p.test(h=0.01,n=80,sig.level=0.05,alternative="less")
         #> cat_items(np, "res2.")
@@ -455,16 +469,17 @@ class TestNormalIndPower2(CheckPowerMixin):
                       ' binomial distribution (arcsine transformation)')
         res2.note = 'same sample sizes'
 
-        self.res2 = res2
-        self.kwds = {'effect_size': res2.h, 'nobs1': res2.n,
+        cls.res2 = res2
+        cls.kwds = {'effect_size': res2.h, 'nobs1': res2.n,
                      'alpha': res2.sig_level, 'power':res2.power, 'ratio': 1}
-        self.kwds_extra = {'alternative':'smaller'}
-        self.cls = smp.NormalIndPower
+        cls.kwds_extra = {'alternative':'smaller'}
+        cls.cls = smp.NormalIndPower
 
 
 class TestNormalIndPower_onesamp1(CheckPowerMixin):
 
-    def __init__(self):
+    @classmethod
+    def setup_class(cls):
         # forcing one-sample by using ratio=0
         #> example from above
         # results copied not directly from R
@@ -477,18 +492,19 @@ class TestNormalIndPower_onesamp1(CheckPowerMixin):
         res2.note = 'NULL'
         res2.method = 'two sample power calculation'
 
-        self.res2 = res2
-        self.kwds = {'effect_size': res2.d, 'nobs1': res2.n,
+        cls.res2 = res2
+        cls.kwds = {'effect_size': res2.d, 'nobs1': res2.n,
                      'alpha': res2.sig_level, 'power':res2.power}
         # keyword for which we don't look for root:
-        self.kwds_extra = {'ratio': 0}
+        cls.kwds_extra = {'ratio': 0}
 
-        self.cls = smp.NormalIndPower
+        cls.cls = smp.NormalIndPower
 
 class TestNormalIndPower_onesamp2(CheckPowerMixin):
     # Note: same power as two sample case with twice as many observations
 
-    def __init__(self):
+    @classmethod
+    def setup_class(cls):
         # forcing one-sample by using ratio=0
         res2 = Holder()
         #> np = pwr.norm.test(d=0.01,n=40,sig.level=0.05,alternative="less")
@@ -500,19 +516,20 @@ class TestNormalIndPower_onesamp2(CheckPowerMixin):
         res2.alternative = 'less'
         res2.method = 'Mean power calculation for normal distribution with known variance'
 
-        self.res2 = res2
-        self.kwds = {'effect_size': res2.d, 'nobs1': res2.n,
+        cls.res2 = res2
+        cls.kwds = {'effect_size': res2.d, 'nobs1': res2.n,
                      'alpha': res2.sig_level, 'power':res2.power}
         # keyword for which we don't look for root:
-        self.kwds_extra = {'ratio': 0, 'alternative':'smaller'}
+        cls.kwds_extra = {'ratio': 0, 'alternative':'smaller'}
 
-        self.cls = smp.NormalIndPower
+        cls.cls = smp.NormalIndPower
 
 
 
 class TestChisquarePower(CheckPowerMixin):
 
-    def __init__(self):
+    @classmethod
+    def setup_class(cls):
         # one example from test_gof, results_power
         res2 = Holder()
         res2.w = 0.1
@@ -523,14 +540,14 @@ class TestChisquarePower(CheckPowerMixin):
         res2.method = 'Chi squared power calculation'
         res2.note = 'N is the number of observations'
 
-        self.res2 = res2
-        self.kwds = {'effect_size': res2.w, 'nobs': res2.N,
+        cls.res2 = res2
+        cls.kwds = {'effect_size': res2.w, 'nobs': res2.N,
                      'alpha': res2.sig_level, 'power':res2.power}
         # keyword for which we don't look for root:
         # solving for n_bins doesn't work, will not be used in regular usage
-        self.kwds_extra = {'n_bins': res2.df + 1}
+        cls.kwds_extra = {'n_bins': res2.df + 1}
 
-        self.cls = smp.GofChisquarePower
+        cls.cls = smp.GofChisquarePower
 
     def _test_positional(self):
 
@@ -618,7 +635,8 @@ def test_ftest_power():
 # class based version of two above test for Ftest
 class TestFtestAnovaPower(CheckPowerMixin):
 
-    def __init__(self):
+    @classmethod
+    def setup_class(cls):
         res2 = Holder()
         #example from Gplus documentation F-test ANOVA
         #Total sample size:200
@@ -637,22 +655,23 @@ class TestFtestAnovaPower(CheckPowerMixin):
         res2.power = 0.8408
         res2.method = 'Multiple regression power calculation'
 
-        self.res2 = res2
-        self.kwds = {'effect_size': res2.f, 'nobs': res2.n,
+        cls.res2 = res2
+        cls.kwds = {'effect_size': res2.f, 'nobs': res2.n,
                      'alpha': res2.alpha, 'power': res2.power}
         # keyword for which we don't look for root:
         # solving for n_bins doesn't work, will not be used in regular usage
-        self.kwds_extra = {'k_groups': res2.k} # rootfinding doesn't work
-        #self.args_names = ['effect_size','nobs', 'alpha']#, 'k_groups']
-        self.cls = smp.FTestAnovaPower
+        cls.kwds_extra = {'k_groups': res2.k} # rootfinding doesn't work
+        #cls.args_names = ['effect_size','nobs', 'alpha']#, 'k_groups']
+        cls.cls = smp.FTestAnovaPower
         # precision for test_power
-        self.decimal = 4
+        cls.decimal = 4
 
 
 
 class TestFtestPower(CheckPowerMixin):
 
-    def __init__(self):
+    @classmethod
+    def setup_class(cls):
         res2 = Holder()
         #> rf = pwr.f2.test(u=5, v=19, f2=0.3**2, sig.level=0.1)
         #> cat_items(rf, "res2.")
@@ -663,17 +682,17 @@ class TestFtestPower(CheckPowerMixin):
         res2.power = 0.235454222377575
         res2.method = 'Multiple regression power calculation'
 
-        self.res2 = res2
-        self.kwds = {'effect_size': np.sqrt(res2.f2), 'df_num': res2.v,
+        cls.res2 = res2
+        cls.kwds = {'effect_size': np.sqrt(res2.f2), 'df_num': res2.v,
                      'df_denom': res2.u, 'alpha': res2.sig_level,
                      'power': res2.power}
         # keyword for which we don't look for root:
         # solving for n_bins doesn't work, will not be used in regular usage
-        self.kwds_extra = {}
-        self.args_names = ['effect_size', 'df_num', 'df_denom', 'alpha']
-        self.cls = smp.FTestPower
+        cls.kwds_extra = {}
+        cls.args_names = ['effect_size', 'df_num', 'df_denom', 'alpha']
+        cls.cls = smp.FTestPower
         # precision for test_power
-        self.decimal = 5
+        cls.decimal = 5
 
 
 def test_power_solver():
@@ -715,6 +734,7 @@ def test_power_solver():
     assert_raises(ValueError, nip.solve_power, None, nobs1=1600, alpha=0.01,
                   power=0.005, ratio=1, alternative='larger')
 
+@skipif(SM_GT_10, 'Known failure on modern SciPy')
 def test_power_solver_warn():
     # messing up the solver to trigger warning
     # I wrote this with scipy 0.9,
@@ -727,27 +747,26 @@ def test_power_solver_warn():
     nip.start_bqexp['nobs1'] = {'upp': 50, 'low': -20}
     val = nip.solve_power(0.1, nobs1=None, alpha=0.01, power=pow_, ratio=1,
                           alternative='larger')
-    import scipy
-    if scipy.__version__ < '0.10':
-        assert_almost_equal(val, 1600, decimal=4)
-        assert_equal(nip.cache_fit_res[0], 1)
+
+    assert_almost_equal(val, 1600, decimal=4)
+    assert_equal(nip.cache_fit_res[0], 1)
+    assert_equal(len(nip.cache_fit_res), 3)
+
+    # case that has convergence failure, and should warn
+    nip.start_ttp['nobs1'] = np.nan
+
+    from statsmodels.tools.sm_exceptions import ConvergenceWarning
+    assert_warns(ConvergenceWarning, nip.solve_power, 0.1, nobs1=None,
+                  alpha=0.01, power=pow_, ratio=1, alternative='larger')
+    # this converges with scipy 0.11  ???
+    # nip.solve_power(0.1, nobs1=None, alpha=0.01, power=pow_, ratio=1, alternative='larger')
+
+    with warnings.catch_warnings():  # python >= 2.6
+        warnings.simplefilter("ignore")
+        val = nip.solve_power(0.1, nobs1=None, alpha=0.01, power=pow_, ratio=1,
+                              alternative='larger')
+        assert_equal(nip.cache_fit_res[0], 0)
         assert_equal(len(nip.cache_fit_res), 3)
-
-        # case that has convergence failure, and should warn
-        nip.start_ttp['nobs1'] = np.nan
-
-        from statsmodels.tools.sm_exceptions import ConvergenceWarning
-        assert_warns(ConvergenceWarning, nip.solve_power, 0.1, nobs1=None,
-                      alpha=0.01, power=pow_, ratio=1, alternative='larger')
-        # this converges with scipy 0.11  ???
-        # nip.solve_power(0.1, nobs1=None, alpha=0.01, power=pow_, ratio=1, alternative='larger')
-
-        with warnings.catch_warnings():  # python >= 2.6
-            warnings.simplefilter("ignore")
-            val = nip.solve_power(0.1, nobs1=None, alpha=0.01, power=pow_, ratio=1,
-                                  alternative='larger')
-            assert_equal(nip.cache_fit_res[0], 0)
-            assert_equal(len(nip.cache_fit_res), 3)
 
 
 
@@ -759,3 +778,4 @@ if __name__ == '__main__':
     nt = TestNormalIndPower_onesamp1()
     nt.test_power()
     nt.test_roots()
+

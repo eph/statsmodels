@@ -3,15 +3,19 @@ Base tools for handling various kinds of data structures, attaching metadata to
 results, and doing data cleaning
 """
 from statsmodels.compat.python import reduce, iteritems, lmap, zip, range
+from statsmodels.compat.numpy import np_matrix_rank
 import numpy as np
-from pandas import DataFrame, Series, TimeSeries, isnull
+from pandas import DataFrame, Series, isnull
 from statsmodels.tools.decorators import (resettable_cache, cache_readonly,
                                           cache_writable)
 import statsmodels.tools.data as data_util
 from statsmodels.tools.sm_exceptions import MissingDataError
+
+
 def _asarray_2dcolumns(x):
     if np.asarray(x).ndim > 1 and np.asarray(x).squeeze().ndim == 1:
         return
+
 
 def _asarray_2d_null_rows(x):
     """
@@ -22,8 +26,8 @@ def _asarray_2d_null_rows(x):
     #input
     x = np.asarray(x)
     if x.ndim == 1:
-        x = x[:,None]
-    return np.any(isnull(x), axis=1)[:,None]
+        x = x[:, None]
+    return np.any(isnull(x), axis=1)[:, None]
 
 
 def _nan_rows(*arrs):
@@ -34,6 +38,7 @@ def _nan_rows(*arrs):
     """
     if len(arrs) == 1:
         arrs += ([[False]],)
+
     def _nan_row_maybe_two_inputs(x, y):
         # check for dtype bc dataframe has dtypes
         x_is_boolean_array = hasattr(x, 'dtype') and x.dtype == bool and x
@@ -41,24 +46,31 @@ def _nan_rows(*arrs):
                              (x_is_boolean_array | _asarray_2d_null_rows(y)))
     return reduce(_nan_row_maybe_two_inputs, arrs).squeeze()
 
+
 class ModelData(object):
     """
     Class responsible for handling input data and extracting metadata into the
     appropriate form
     """
+    _param_names = None
+
     def __init__(self, endog, exog=None, missing='none', hasconst=None,
-                       **kwargs):
+                 **kwargs):
+        if 'design_info' in kwargs:
+            self.design_info = kwargs.pop('design_info')
+        if 'formula' in kwargs:
+            self.formula = kwargs.pop('formula')
         if missing != 'none':
             arrays, nan_idx = self.handle_missing(endog, exog, missing,
-                                                       **kwargs)
+                                                  **kwargs)
             self.missing_row_idx = nan_idx
-            self.__dict__.update(arrays) # attach all the data arrays
+            self.__dict__.update(arrays)  # attach all the data arrays
             self.orig_endog = self.endog
             self.orig_exog = self.exog
             self.endog, self.exog = self._convert_endog_exog(self.endog,
-                    self.exog)
+                                                             self.exog)
         else:
-            self.__dict__.update(kwargs) # attach the extra arrays anyway
+            self.__dict__.update(kwargs)  # attach the extra arrays anyway
             self.orig_endog = endog
             self.orig_exog = exog
             self.endog, self.exog = self._convert_endog_exog(endog, exog)
@@ -68,6 +80,40 @@ class ModelData(object):
         self._check_integrity()
         self._cache = resettable_cache()
 
+    def __getstate__(self):
+        from copy import copy
+        d = copy(self.__dict__)
+        if "design_info" in d:
+            del d["design_info"]
+            d["restore_design_info"] = True
+        return d
+
+    def __setstate__(self, d):
+        if "restore_design_info" in d:
+            # NOTE: there may be a more performant way to do this
+            from patsy import dmatrices, PatsyError
+            exc = []
+            try:
+                data = d['frame']
+            except KeyError:
+                data = d['orig_endog'].join(d['orig_exog'])
+
+            for depth in [2, 3, 1, 0, 4]:  # sequence is a guess where to likely find it
+                try:
+                    _, design = dmatrices(d['formula'], data, eval_env=depth,
+                                          return_type='dataframe')
+                    break
+                except (NameError, PatsyError) as e:
+                    print('not in depth %d' % depth)
+                    exc.append(e)   # why do I need a reference from outside except block
+                    pass
+            else:
+                raise exc[-1]
+
+            self.design_info = design.design_info
+            del d["restore_design_info"]
+        self.__dict__.update(d)
+
     def _handle_constant(self, hasconst):
         if hasconst is not None:
             if hasconst:
@@ -76,17 +122,58 @@ class ModelData(object):
             else:
                 self.k_constant = 0
                 self.const_idx = None
+        elif self.exog is None:
+            self.const_idx = None
+            self.k_constant = 0
         else:
-            try: # to detect where the constant is
-                const_idx = np.where(self.exog.var(axis = 0) == 0)[0].squeeze()
-                self.k_constant = const_idx.size
-                if self.k_constant > 1:
-                    raise ValueError("More than one constant detected.")
-                else:
+            # detect where the constant is
+            check_implicit = False
+            const_idx = np.where(self.exog.ptp(axis=0) == 0)[0].squeeze()
+            self.k_constant = const_idx.size
+
+            if self.k_constant == 1:
+                if self.exog[:, const_idx].mean() != 0:
                     self.const_idx = const_idx
-            except: # should be an index error but who knows, means no const
+                else:
+                    # we only have a zero column and no other constant
+                    check_implicit = True
+            elif self.k_constant > 1:
+                # we have more than one constant column
+                # look for ones
+                values = []  # keep values if we need != 0
+                for idx in const_idx:
+                    value = self.exog[:, idx].mean()
+                    if value == 1:
+                        self.k_constant = 1
+                        self.const_idx = idx
+                        break
+                    values.append(value)
+                else:
+                    # we didn't break, no column of ones
+                    pos = (np.array(values) != 0)
+                    if pos.any():
+                        # take the first nonzero column
+                        self.k_constant = 1
+                        self.const_idx = const_idx[pos.argmax()]
+                    else:
+                        # only zero columns
+                        check_implicit = True
+            elif self.k_constant == 0:
+                check_implicit = True
+            else:
+                # shouldn't be here
+                pass
+
+            if check_implicit:
+                # look for implicit constant
+                # Compute rank of augmented matrix
+                augmented_exog = np.column_stack(
+                            (np.ones(self.exog.shape[0]), self.exog))
+                rank_augm = np_matrix_rank(augmented_exog)
+                rank_orig = np_matrix_rank(self.exog)
+                self.k_constant = int(rank_orig == rank_augm)
                 self.const_idx = None
-                self.k_constant = 0
+
 
     @classmethod
     def _drop_nans(cls, x, nan_mask):
@@ -104,7 +191,16 @@ class ModelData(object):
         """
         none_array_names = []
 
-        if exog is not None:
+        # patsy's already dropped NaNs in y/X
+        missing_idx = kwargs.pop('missing_idx', None)
+
+        if missing_idx is not None:
+            # y, X already handled by patsy. add back in later.
+            combined = ()
+            combined_names = []
+            if exog is None:
+                none_array_names += ['exog']
+        elif exog is not None:
             combined = (endog, exog)
             combined_names = ['endog', 'exog']
         else:
@@ -122,25 +218,63 @@ class ModelData(object):
                     continue
                 # grab 1d arrays
                 if value_array.ndim == 1:
-                    combined += (value_array,)
+                    combined += (np.asarray(value_array),)
                     combined_names += [key]
                 elif value_array.squeeze().ndim == 1:
-                    combined += (value_array,)
+                    combined += (np.asarray(value_array),)
                     combined_names += [key]
 
                 # grab 2d arrays that are _assumed_ to be symmetric
                 elif value_array.ndim == 2:
-                    combined_2d += (value_array,)
+                    combined_2d += (np.asarray(value_array),)
                     combined_2d_names += [key]
                 else:
                     raise ValueError("Arrays with more than 2 dimensions "
-                            "aren't yet handled")
+                                     "aren't yet handled")
 
-        nan_mask = _nan_rows(*combined)
-        if combined_2d:
-            nan_mask = _nan_rows(*(nan_mask[:, None],) + combined_2d)
+        if missing_idx is not None:
+            nan_mask = missing_idx
+            updated_row_mask = None
+            if combined:  # there were extra arrays not handled by patsy
+                combined_nans = _nan_rows(*combined)
+                if combined_nans.shape[0] != nan_mask.shape[0]:
+                    raise ValueError("Shape mismatch between endog/exog "
+                                     "and extra arrays given to model.")
+                # for going back and updated endog/exog
+                updated_row_mask = combined_nans[~nan_mask]
+                nan_mask |= combined_nans  # for updating extra arrays only
+            if combined_2d:
+                combined_2d_nans = _nan_rows(combined_2d)
+                if combined_2d_nans.shape[0] != nan_mask.shape[0]:
+                    raise ValueError("Shape mismatch between endog/exog "
+                                     "and extra 2d arrays given to model.")
+                if updated_row_mask is not None:
+                    updated_row_mask |= combined_2d_nans[~nan_mask]
+                else:
+                    updated_row_mask = combined_2d_nans[~nan_mask]
+                nan_mask |= combined_2d_nans
 
-        if missing == 'raise' and np.any(nan_mask):
+        else:
+            nan_mask = _nan_rows(*combined)
+            if combined_2d:
+                nan_mask = _nan_rows(*(nan_mask[:, None],) + combined_2d)
+
+        if not np.any(nan_mask):  # no missing don't do anything
+            combined = dict(zip(combined_names, combined))
+            if combined_2d:
+                combined.update(dict(zip(combined_2d_names, combined_2d)))
+            if none_array_names:
+                combined.update(dict(zip(none_array_names,
+                                         [None] * len(none_array_names))))
+
+            if missing_idx is not None:
+                combined.update({'endog': endog})
+                if exog is not None:
+                    combined.update({'exog': exog})
+
+            return combined, []
+
+        elif missing == 'raise':
             raise MissingDataError("NaNs were encountered in the data")
 
         elif missing == 'drop':
@@ -148,12 +282,26 @@ class ModelData(object):
             drop_nans = lambda x: cls._drop_nans(x, nan_mask)
             drop_nans_2d = lambda x: cls._drop_nans_2d(x, nan_mask)
             combined = dict(zip(combined_names, lmap(drop_nans, combined)))
+
+            if missing_idx is not None:
+                if updated_row_mask is not None:
+                    updated_row_mask = ~updated_row_mask
+                    # update endog/exog with this new information
+                    endog = cls._drop_nans(endog, updated_row_mask)
+                    if exog is not None:
+                        exog = cls._drop_nans(exog, updated_row_mask)
+
+                combined.update({'endog': endog})
+                if exog is not None:
+                    combined.update({'exog': exog})
+
             if combined_2d:
                 combined.update(dict(zip(combined_2d_names,
-                                          lmap(drop_nans_2d, combined_2d))))
+                                         lmap(drop_nans_2d, combined_2d))))
             if none_array_names:
                 combined.update(dict(zip(none_array_names,
-                                          [None] * len(none_array_names))))
+                                         [None] * len(none_array_names))))
+
             return combined, np.where(~nan_mask)[0].tolist()
         else:
             raise ValueError("missing option %s not understood" % missing)
@@ -194,6 +342,15 @@ class ModelData(object):
             return list(xnames)
         return None
 
+    @property
+    def param_names(self):
+        # for handling names of 'extra' parameters in summary, etc.
+        return self._param_names or self.xnames
+
+    @param_names.setter
+    def param_names(self, values):
+        self._param_names = values
+
     @cache_readonly
     def row_labels(self):
         exog = self.orig_exog
@@ -227,7 +384,7 @@ class ModelData(object):
         if data_util._is_structured_ndarray(endog):
             endog = data_util.struct_to_ndarray(endog)
         endog = np.asarray(endog)
-        if len(endog) == 1: # never squeeze to a scalar
+        if len(endog) == 1:  # never squeeze to a scalar
             if endog.ndim == 1:
                 return endog
             elif endog.ndim > 1:
@@ -245,7 +402,7 @@ class ModelData(object):
             if len(self.exog) != len(self.endog):
                 raise ValueError("endog and exog matrices are different sizes")
 
-    def wrap_output(self, obj, how='columns'):
+    def wrap_output(self, obj, how='columns', names=None):
         if how == 'columns':
             return self.attach_columns(obj)
         elif how == 'rows':
@@ -258,6 +415,12 @@ class ModelData(object):
             return self.attach_columns_eq(obj)
         elif how == 'cov_eq':
             return self.attach_cov_eq(obj)
+        elif how == 'generic_columns':
+            return self.attach_generic_columns(obj, names)
+        elif how == 'generic_columns_2d':
+            return self.attach_generic_columns_2d(obj, names)
+        elif how == 'ynames':
+            return self.attach_ynames(obj)
         else:
             return obj
 
@@ -279,26 +442,47 @@ class ModelData(object):
     def attach_dates(self, result):
         return result
 
+    def attach_generic_columns(self, result, *args, **kwargs):
+        return result
+
+    def attach_generic_columns_2d(self, result, *args, **kwargs):
+        return result
+
+    def attach_ynames(self, result):
+        return result
+
+
 class PatsyData(ModelData):
     def _get_names(self, arr):
         return arr.design_info.column_names
+
 
 class PandasData(ModelData):
     """
     Data handling class which knows how to reattach pandas metadata to model
     results
     """
+
+    def _convert_endog_exog(self, endog, exog=None):
+        #TODO: remove this when we handle dtype systematically
+        endog = np.asarray(endog)
+        exog = exog if exog is None else np.asarray(exog)
+        if endog.dtype == object or exog is not None and exog.dtype == object:
+            raise ValueError("Pandas data cast to numpy dtype of object. "
+                             "Check input data with np.asarray(data).")
+        return super(PandasData, self)._convert_endog_exog(endog, exog)
+
     @classmethod
     def _drop_nans(cls, x, nan_mask):
         if hasattr(x, 'ix'):
-            return x.ix[nan_mask]
-        else: # extra arguments could be plain ndarrays
+            return x.loc[nan_mask]
+        else:  # extra arguments could be plain ndarrays
             return super(PandasData, cls)._drop_nans(x, nan_mask)
 
     @classmethod
     def _drop_nans_2d(cls, x, nan_mask):
         if hasattr(x, 'ix'):
-            return x.ix[nan_mask].ix[:, nan_mask]
+            return x.loc[nan_mask].loc[:, nan_mask]
         else:  # extra arguments could be plain ndarrays
             return super(PandasData, cls)._drop_nans_2d(x, nan_mask)
 
@@ -319,20 +503,32 @@ class PandasData(ModelData):
             # exog is not, so just return the row labels from endog
             return self.orig_endog.index
 
+    def attach_generic_columns(self, result, names):
+        # get the attribute to use
+        column_names = getattr(self, names, None)
+        return Series(result, index=column_names)
+
+    def attach_generic_columns_2d(self, result, rownames, colnames=None):
+        colnames = colnames or rownames
+        rownames = getattr(self, rownames, None)
+        colnames = getattr(self, colnames, None)
+        return DataFrame(result, index=rownames, columns=colnames)
+
     def attach_columns(self, result):
         # this can either be a 1d array or a scalar
         # don't squeeze because it might be a 2d row array
         # if it needs a squeeze, the bug is elsewhere
         if result.ndim <= 1:
-            return Series(result, index=self.xnames)
-        else: # for e.g., confidence intervals
-            return DataFrame(result, index=self.xnames)
+            return Series(result, index=self.param_names)
+        else:  # for e.g., confidence intervals
+            return DataFrame(result, index=self.param_names)
 
     def attach_columns_eq(self, result):
         return DataFrame(result, index=self.xnames, columns=self.ynames)
 
     def attach_cov(self, result):
-        return DataFrame(result, index=self.xnames, columns=self.xnames)
+        return DataFrame(result, index=self.param_names,
+                         columns=self.param_names)
 
     def attach_cov_eq(self, result):
         return DataFrame(result, index=self.ynames, columns=self.ynames)
@@ -340,22 +536,45 @@ class PandasData(ModelData):
     def attach_rows(self, result):
         # assumes if len(row_labels) > len(result) it's bc it was truncated
         # at the front, for AR lags, for example
-        if result.squeeze().ndim == 1:
-            return Series(result, index=self.row_labels[-len(result):])
-        else: # this is for VAR results, may not be general enough
+        squeezed = result.squeeze()
+        k_endog = np.array(self.ynames, ndmin=1).shape[0]
+        if k_endog > 1 and squeezed.shape == (k_endog,):
+            squeezed = squeezed[None, :]
+        # May be zero-dim, for example in the case of forecast one step in tsa
+        if squeezed.ndim < 2:
+            return Series(squeezed, index=self.row_labels[-len(result):])
+        else:
             return DataFrame(result, index=self.row_labels[-len(result):],
-                                columns=self.ynames)
+                             columns=self.ynames)
 
     def attach_dates(self, result):
-        return TimeSeries(result, index=self.predict_dates)
+        squeezed = result.squeeze()
+        k_endog = np.array(self.ynames, ndmin=1).shape[0]
+        if k_endog > 1 and squeezed.shape == (k_endog,):
+            squeezed = squeezed[None, :]
+        # May be zero-dim, for example in the case of forecast one step in tsa
+        if squeezed.ndim < 2:
+            return Series(squeezed, index=self.predict_dates)
+        else:
+            return DataFrame(result, index=self.predict_dates,
+                             columns=self.ynames)
+
+    def attach_ynames(self, result):
+        squeezed = result.squeeze()
+        # May be zero-dim, for example in the case of forecast one step in tsa
+        if squeezed.ndim < 2:
+            return Series(squeezed, name=self.ynames)
+        else:
+            return DataFrame(result, columns=self.ynames)
 
 def _make_endog_names(endog):
     if endog.ndim == 1 or endog.shape[1] == 1:
         ynames = ['y']
-    else: # for VAR
+    else:  # for VAR
         ynames = ['y%d' % (i+1) for i in range(endog.shape[1])]
 
     return ynames
+
 
 def _make_exog_names(exog):
     exog_var = exog.var(0)
@@ -363,10 +582,10 @@ def _make_exog_names(exog):
         # assumes one constant in first or last position
         # avoid exception if more than one constant
         const_idx = exog_var.argmin()
-        exog_names = ['x%d' % i for i in range(1,exog.shape[1])]
+        exog_names = ['x%d' % i for i in range(1, exog.shape[1])]
         exog_names.insert(const_idx, 'const')
     else:
-        exog_names = ['x%d' % i for i in range(1,exog.shape[1]+1)]
+        exog_names = ['x%d' % i for i in range(1, exog.shape[1]+1)]
 
     return exog_names
 

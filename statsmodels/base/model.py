@@ -3,11 +3,14 @@ from statsmodels.compat.python import iterkeys, lzip, range, reduce
 import numpy as np
 from scipy import stats
 from statsmodels.base.data import handle_data
+from statsmodels.tools.data import _is_using_pandas
 from statsmodels.tools.tools import recipr, nan_dot
-from statsmodels.stats.contrast import ContrastResults
+from statsmodels.stats.contrast import ContrastResults, WaldTestResults
 from statsmodels.tools.decorators import resettable_cache, cache_readonly
 import statsmodels.base.wrapper as wrap
 from statsmodels.tools.numdiff import approx_fprime
+from statsmodels.tools.sm_exceptions import ValueWarning, \
+    HessianInversionWarning
 from statsmodels.formula import handle_formula_data
 from statsmodels.compat.numpy import np_matrix_rank
 from statsmodels.base.optimizer import Optimizer
@@ -22,19 +25,20 @@ _model_params_doc = """
         A nobs x k array where `nobs` is the number of observations and `k`
         is the number of regressors. An intercept is not included by default
         and should be added by the user. See
-        `statsmodels.tools.add_constant`."""
+        :func:`statsmodels.tools.add_constant`."""
 
-_missing_param_doc = """missing : str
+_missing_param_doc = """\
+missing : str
         Available options are 'none', 'drop', and 'raise'. If 'none', no nan
         checking is done. If 'drop', any observations with nans are dropped.
-        If 'raise', an error is raised. Default is 'none.'
-        """
-_extra_param_doc = """hasconst : None or bool
+        If 'raise', an error is raised. Default is 'none.'"""
+_extra_param_doc = """
+    hasconst : None or bool
         Indicates whether the RHS includes a user-supplied constant. If True,
         a constant is not checked for and k_constant is set to 1 and all
         result statistics are calculated as if a constant is present. If
         False, a constant is not checked for and k_constant is set to 0.
-        """
+"""
 
 
 class Model(object):
@@ -61,8 +65,9 @@ class Model(object):
         self.exog = self.data.exog
         self.endog = self.data.endog
         self._data_attr = []
-        self._data_attr.extend(['exog', 'endog', 'data.exog', 'data.endog',
-                                'data.orig_endog', 'data.orig_exog'])
+        self._data_attr.extend(['exog', 'endog', 'data.exog', 'data.endog'])
+        if 'formula' not in kwargs:  # won't be able to unpickle without these
+            self._data_attr.extend(['data.orig_endog', 'data.orig_exog'])
         # store keys for extras if we need to recreate model instance
         # we don't need 'missing', maybe we need 'hasconst'
         self._init_keys = list(kwargs.keys())
@@ -83,6 +88,8 @@ class Model(object):
         data = handle_data(endog, exog, missing, hasconst, **kwargs)
         # kwargs arrays could have changed, easier to just attach here
         for key in kwargs:
+            if key in ['design_info', 'formula']:  # leave attached to data
+                continue
             # pop so we don't start keeping all these twice or references
             try:
                 setattr(self, key, data.__dict__.pop(key))
@@ -91,7 +98,7 @@ class Model(object):
         return data
 
     @classmethod
-    def from_formula(cls, formula, data, subset=None, *args, **kwargs):
+    def from_formula(cls, formula, data, subset=None, drop_cols=None, *args, **kwargs):
         """
         Create a Model from a formula and dataframe.
 
@@ -105,10 +112,18 @@ class Model(object):
             An array-like object of booleans, integers, or index values that
             indicate the subset of df to use in the model. Assumes df is a
             `pandas.DataFrame`
+        drop_cols : array-like
+            Columns to drop from the design matrix.  Cannot be used to
+            drop terms involving categoricals.
         args : extra arguments
             These are passed to the model
         kwargs : extra keyword arguments
-            These are passed to the model.
+            These are passed to the model with one exception. The
+            ``eval_env`` keyword is passed to patsy. It can be either a
+            :class:`patsy:patsy.EvalEnvironment` object or an integer
+            indicating the depth of the namespace to use. For example, the
+            default ``eval_env=0`` uses the calling namespace. If you wish
+            to use a "clean" environment set ``eval_env=-1``.
 
         Returns
         -------
@@ -123,8 +138,39 @@ class Model(object):
         #TODO: provide a docs template for args/kwargs from child models
         #TODO: subset could use syntax. issue #469.
         if subset is not None:
-            data = data.ix[subset]
-        endog, exog = handle_formula_data(data, None, formula)
+            data = data.loc[subset]
+        eval_env = kwargs.pop('eval_env', None)
+        if eval_env is None:
+            eval_env = 2
+        elif eval_env == -1:
+            from patsy import EvalEnvironment
+            eval_env = EvalEnvironment({})
+        else:
+            eval_env += 1  # we're going down the stack again
+        missing = kwargs.get('missing', 'drop')
+        if missing == 'none':  # with patsy it's drop or raise. let's raise.
+            missing = 'raise'
+
+        tmp = handle_formula_data(data, None, formula, depth=eval_env,
+                                  missing=missing)
+        ((endog, exog), missing_idx, design_info) = tmp
+
+        if drop_cols is not None and len(drop_cols) > 0:
+            cols = [x for x in exog.columns if x not in drop_cols]
+            if len(cols) < len(exog.columns):
+                exog = exog[cols]
+                cols = list(design_info.term_names)
+                for col in drop_cols:
+                    try:
+                        cols.remove(col)
+                    except ValueError:
+                        pass # OK if not present
+                design_info = design_info.builder.subset(cols).design_info
+
+        kwargs.update({'missing_idx': missing_idx,
+                       'missing': missing,
+                       'formula': formula,  # attach formula for unpckling
+                       'design_info': design_info})
         mod = cls(endog, exog, *args, **kwargs)
         mod.formula = formula
 
@@ -134,10 +180,12 @@ class Model(object):
 
     @property
     def endog_names(self):
+        """Names of endogenous variables"""
         return self.data.ynames
 
     @property
     def exog_names(self):
+        """Names of exogenous variables"""
         return self.data.xnames
 
     def fit(self):
@@ -204,8 +252,8 @@ class LikelihoodModel(Model):
         raise NotImplementedError
 
     def fit(self, start_params=None, method='newton', maxiter=100,
-            full_output=True, disp=True, fargs=(), callback=None,
-            retall=False, **kwargs):
+            full_output=True, disp=True, fargs=(), callback=None, retall=False,
+            skip_hessian=False, **kwargs):
         """
         Fit method for likelihood based models
 
@@ -225,6 +273,7 @@ class LikelihoodModel(Model):
             - 'cg' for conjugate gradient
             - 'ncg' for Newton-conjugate gradient
             - 'basinhopping' for global basin-hopping solver
+            - 'minimize' for generic wrapper of scipy minimize (BFGS by default)
 
             The explicit arguments in `fit` are passed to the solver,
             with the exception of the basin-hopping solver. Each
@@ -249,6 +298,18 @@ class LikelihoodModel(Model):
         retall : bool, optional
             Set to True to return list of solutions at each iteration.
             Available in Results object's mle_retvals attribute.
+        skip_hessian : bool, optional
+            If False (default), then the negative inverse hessian is calculated
+            after the optimization. If True, then the hessian will not be
+            calculated. However, it will be available in methods that use the
+            hessian in the optimization (currently only with `"newton"`).
+        kwargs : keywords
+            All kwargs are passed to the chosen solver with one exception. The
+            following keyword controls what happens after the fit::
+
+                warn_convergence : bool, optional
+                    If True, checks the model for the converged flag. If the
+                    converged flag is False, a ConvergenceWarning is issued.
 
         Notes
         -----
@@ -348,6 +409,13 @@ class LikelihoodModel(Model):
                       - `args` <- `fargs`
                       - `jac` <- `score`
                       - `hess` <- `hess`
+            'minimize'
+                min_method : str, optional
+                    Name of minimization method to use.
+                    Any method specific arguments can be passed directly.
+                    For a list of methods and their arguments, see
+                    documentation of `scipy.optimize.minimize`.
+                    If no method is specified, then BFGS is used.
         """
         Hinv = None  # JP error if full_output=0, Hinv not defined
 
@@ -366,18 +434,26 @@ class LikelihoodModel(Model):
         # args in most (any?) of the optimize function
 
         nobs = self.endog.shape[0]
-        f = lambda params, *args: -self.loglike(params, *args) / nobs
-        score = lambda params: -self.score(params) / nobs
-        try:
-            hess = lambda params: -self.hessian(params) / nobs
-        except:
-            hess = None
+        # f = lambda params, *args: -self.loglike(params, *args) / nobs
+
+        def f(params, *args):
+            return -self.loglike(params, *args) / nobs
 
         if method == 'newton':
-            score = lambda params: self.score(params) / nobs
-            hess = lambda params: self.hessian(params) / nobs
-            #TODO: why are score and hess positive?
+            # TODO: why are score and hess positive?
+            def score(params, *args):
+                return self.score(params, *args) / nobs
 
+            def hess(params, *args):
+                return self.hessian(params, *args) / nobs
+        else:
+            def score(params, *args):
+                return -self.score(params, *args) / nobs
+
+            def hess(params, *args):
+                return -self.hessian(params, *args) / nobs
+
+        warn_convergence = kwargs.pop('warn_convergence', True)
         optimizer = Optimizer()
         xopt, retvals, optim_settings = optimizer._fit(f, score, start_params,
                                                        fargs, kwargs,
@@ -391,29 +467,48 @@ class LikelihoodModel(Model):
 
         #NOTE: this is for fit_regularized and should be generalized
         cov_params_func = kwargs.setdefault('cov_params_func', None)
-        if not full_output: # xopt should be None and retvals is argmin
-            xopt = retvals
-        elif cov_params_func:
+        if cov_params_func:
             Hinv = cov_params_func(self, xopt, retvals)
         elif method == 'newton' and full_output:
             Hinv = np.linalg.inv(-retvals['Hessian']) / nobs
-        else:
-            try:
-                Hinv = np.linalg.inv(-1 * self.hessian(xopt))
-            except:
-                #might want custom warning ResultsWarning? NumericalWarning?
+        elif not skip_hessian:
+            H = -1 * self.hessian(xopt)
+            invertible = False
+            if np.all(np.isfinite(H)):
+                eigvals, eigvecs = np.linalg.eigh(H)
+                if np.min(eigvals) > 0:
+                    invertible = True
+
+            if invertible:
+                Hinv = eigvecs.dot(np.diag(1.0 / eigvals)).dot(eigvecs.T)
+                Hinv = np.asfortranarray((Hinv + Hinv.T) / 2.0)
+            else:
                 from warnings import warn
-                warndoc = ('Inverting hessian failed, no bse or '
-                           'cov_params available')
-                warn(warndoc, RuntimeWarning)
+                warn('Inverting hessian failed, no bse or cov_params '
+                     'available', HessianInversionWarning)
                 Hinv = None
 
+        if 'cov_type' in kwargs:
+            cov_kwds = kwargs.get('cov_kwds', {})
+            kwds = {'cov_type':kwargs['cov_type'], 'cov_kwds':cov_kwds}
+        else:
+            kwds = {}
+        if 'use_t' in kwargs:
+            kwds['use_t'] = kwargs['use_t']
+        #prints for debugging
+        #print('kwargs inLikelihoodModel.fit', kwargs)
+        #print('kwds inLikelihoodModel.fit', kwds)
         #TODO: add Hessian approximation and change the above if needed
-        mlefit = LikelihoodModelResults(self, xopt, Hinv, scale=1.)
+        mlefit = LikelihoodModelResults(self, xopt, Hinv, scale=1., **kwds)
 
         #TODO: hardcode scale?
         if isinstance(retvals, dict):
             mlefit.mle_retvals = retvals
+            if warn_convergence and not retvals['converged']:
+                from warnings import warn
+                from statsmodels.tools.sm_exceptions import ConvergenceWarning
+                warn("Maximum Likelihood optimization failed to converge. "
+                     "Check mle_retvals", ConvergenceWarning)
 
         mlefit.mle_settings = optim_settings
         return mlefit
@@ -477,7 +572,6 @@ class GenericLikelihoodModel(LikelihoodModel):
             self.score = score
         if not hessian is None:
             self.hessian = hessian
-        self.confint_dist = stats.norm
 
         self.__dict__.update(kwds)
 
@@ -519,12 +613,11 @@ class GenericLikelihoodModel(LikelihoodModel):
         #Initialize is called by
         #statsmodels.model.LikelihoodModel.__init__
         #and should contain any preprocessing that needs to be done for a model
-        from statsmodels.tools import tools
         if self.exog is not None:
             # assume constant
-            self.df_model = float(np_matrix_rank(self.exog) - 1)
-            self.df_resid = (float(self.exog.shape[0] -
-                             np_matrix_rank(self.exog)))
+            er = np_matrix_rank(self.exog)
+            self.df_model = float(er - 1)
+            self.df_resid = float(self.exog.shape[0] - er)
         else:
             self.df_model = np.nan
             self.df_resid = np.nan
@@ -581,7 +674,7 @@ class GenericLikelihoodModel(LikelihoodModel):
         kwds.setdefault('centered', True)
         return approx_fprime(params, self.loglike, **kwds).ravel()
 
-    def jac(self, params, **kwds):
+    def score_obs(self, params, **kwds):
         '''
         Jacobian/Gradient of log-likelihood evaluated at params for each
         observation.
@@ -597,6 +690,30 @@ class GenericLikelihoodModel(LikelihoodModel):
         from statsmodels.tools.numdiff import approx_hess
         # need options for hess (epsilon)
         return approx_hess(params, self.loglike)
+
+    def hessian_factor(self, params, scale=None, observed=True):
+        """Weights for calculating Hessian
+
+        Parameters
+        ----------
+        params : ndarray
+            parameter at which Hessian is evaluated
+        scale : None or float
+            If scale is None, then the default scale will be calculated.
+            Default scale is defined by `self.scaletype` and set in fit.
+            If scale is not None, then it is used as a fixed scale.
+        observed : bool
+            If True, then the observed Hessian is returned. If false then the
+            expected information matrix is returned.
+
+        Returns
+        -------
+        hessian_factor : ndarray, 1d
+            A 1d weight vector used in the calculation of the Hessian.
+            The hessian is obtained by `(exog.T * hessian_factor).dot(exog)`
+        """
+
+        raise NotImplementedError
 
     def fit(self, start_params=None, method='nm', maxiter=500, full_output=1,
             disp=1, callback=None, retall=0, **kwargs):
@@ -629,7 +746,7 @@ class GenericLikelihoodModel(LikelihoodModel):
             else:
                 # I don't want to raise after we have already fit()
                 import warnings
-                warnings.warn('more exog_names than parameters', UserWarning)
+                warnings.warn('more exog_names than parameters', ValueWarning)
 
         return genericmlefit
     #fit.__doc__ += LikelihoodModel.fit.__doc__
@@ -672,15 +789,34 @@ class Results(object):
             you can pass a data structure that contains x1 and x2 in
             their original form. Otherwise, you'd need to log the data
             first.
+        args, kwargs :
+            Some models can take additional arguments or keywords, see the
+            predict method of the model for the details.
 
         Returns
         -------
-        See self.model.predict
+        prediction : ndarray, pandas.Series or pandas.DataFrame
+            See self.model.predict
+
         """
+        import pandas as pd
+
+        exog_index = exog.index if _is_using_pandas(exog, None) else None
+
         if transform and hasattr(self.model, 'formula') and exog is not None:
             from patsy import dmatrix
-            exog = dmatrix(self.model.data.orig_exog.design_info.builder,
-                           exog)
+            exog = pd.DataFrame(exog)  # user may pass series, if one predictor
+            if exog_index is None:  # user passed in a dictionary
+                exog_index = exog.index
+            exog = dmatrix(self.model.data.design_info.builder,
+                           exog, return_type="dataframe")
+            if len(exog) < len(exog_index):
+                # missing values, rows have been dropped
+                if exog_index is not None:
+                    exog = exog.reindex(exog_index)
+                else:
+                    import warnings
+                    warnings.warn("nan rows have been dropped", ValueWarning)
 
         if exog is not None:
             exog = np.asarray(exog)
@@ -689,7 +825,22 @@ class Results(object):
                 exog = exog[:, None]
             exog = np.atleast_2d(exog)  # needed in count model shape[1]
 
-        return self.model.predict(self.params, exog, *args, **kwargs)
+        predict_results = self.model.predict(self.params, exog, *args, **kwargs)
+
+        if exog_index is not None and not hasattr(predict_results, 'predicted_values'):
+
+            if predict_results.ndim == 1:
+                return pd.Series(predict_results, index=exog_index)
+            else:
+                return pd.DataFrame(predict_results, index=exog_index)
+
+        else:
+
+            return predict_results
+
+
+    def summary(self):
+        pass
 
 
 #TODO: public method?
@@ -732,7 +883,7 @@ class LikelihoodModelResults(Results):
 
 
     Notes
-    --------
+    -----
     The covariance of params is given by scale times normalized_cov_params.
 
     Return values by solver if full_output is True during fit:
@@ -848,14 +999,62 @@ class LikelihoodModelResults(Results):
             allvecs : list
                 Results at each iteration.
         """
-    def __init__(self, model, params, normalized_cov_params=None, scale=1.):
+
+    # by default we use normal distribution
+    # can be overwritten by instances or subclasses
+    use_t = False
+
+    def __init__(self, model, params, normalized_cov_params=None, scale=1.,
+                 **kwargs):
         super(LikelihoodModelResults, self).__init__(model, params)
         self.normalized_cov_params = normalized_cov_params
         self.scale = scale
-        self.use_t = False  # by default we use normal distribution
+
+        # robust covariance
+        # We put cov_type in kwargs so subclasses can decide in fit whether to
+        # use this generic implementation
+        if 'use_t' in kwargs:
+            use_t = kwargs['use_t']
+            if use_t is not None:
+                self.use_t = use_t
+        if 'cov_type' in kwargs:
+            cov_type = kwargs.get('cov_type', 'nonrobust')
+            cov_kwds = kwargs.get('cov_kwds', {})
+
+            if cov_type == 'nonrobust':
+                self.cov_type = 'nonrobust'
+                self.cov_kwds = {'description' : 'Standard Errors assume that the ' +
+                                 'covariance matrix of the errors is correctly ' +
+                                 'specified.'}
+            else:
+                from statsmodels.base.covtype import get_robustcov_results
+                if cov_kwds is None:
+                    cov_kwds = {}
+                use_t = self.use_t
+                # TODO: we shouldn't need use_t in get_robustcov_results
+                get_robustcov_results(self, cov_type=cov_type, use_self=True,
+                                           use_t=use_t, **cov_kwds)
+
 
     def normalized_cov_params(self):
         raise NotImplementedError
+
+
+    def _get_robustcov_results(self, cov_type='nonrobust', use_self=True,
+                                   use_t=None, **cov_kwds):
+        from statsmodels.base.covtype import get_robustcov_results
+        if cov_kwds is None:
+            cov_kwds = {}
+
+        if cov_type == 'nonrobust':
+            self.cov_type = 'nonrobust'
+            self.cov_kwds = {'description' : 'Standard Errors assume that the ' +
+                             'covariance matrix of the errors is correctly ' +
+                             'specified.'}
+        else:
+            # TODO: we shouldn't need use_t in get_robustcov_results
+            get_robustcov_results(self, cov_type=cov_type, use_self=True,
+                                       use_t=use_t, **cov_kwds)
 
     @cache_readonly
     def llf(self):
@@ -863,7 +1062,14 @@ class LikelihoodModelResults(Results):
 
     @cache_readonly
     def bse(self):
-        return np.sqrt(np.diag(self.cov_params()))
+        # Issue 3299
+        if ((not hasattr(self, 'cov_params_default')) and
+                (self.normalized_cov_params is None)):
+            bse_ = np.empty(len(self.params))
+            bse_[:] = np.nan
+        else:
+            bse_ = np.sqrt(np.diag(self.cov_params()))
+        return bse_
 
     @cache_readonly
     def tvalues(self):
@@ -874,7 +1080,12 @@ class LikelihoodModelResults(Results):
 
     @cache_readonly
     def pvalues(self):
-        return stats.norm.sf(np.abs(self.tvalues)) * 2
+        if self.use_t:
+            df_resid = getattr(self, 'df_resid_inference', self.df_resid)
+            return stats.t.sf(np.abs(self.tvalues), df_resid)*2
+        else:
+            return stats.norm.sf(np.abs(self.tvalues))*2
+
 
     def cov_params(self, r_matrix=None, column=None, scale=None, cov_p=None,
             other=None):
@@ -900,25 +1111,29 @@ class LikelihoodModelResults(Results):
 
         Returns
         -------
+        cov : ndarray
+            covariance matrix of the parameter estimates or of linear
+            combination of parameter estimates. See Notes.
+
+        Notes
+        -----
         (The below are assumed to be in matrix notation.)
 
-        cov : ndarray
-
         If no argument is specified returns the covariance matrix of a model
-        (scale)*(X.T X)^(-1)
+        ``(scale)*(X.T X)^(-1)``
 
         If contrast is specified it pre and post-multiplies as follows
-        (scale) * r_matrix (X.T X)^(-1) r_matrix.T
+        ``(scale) * r_matrix (X.T X)^(-1) r_matrix.T``
 
         If contrast and other are specified returns
-        (scale) * r_matrix (X.T X)^(-1) other.T
+        ``(scale) * r_matrix (X.T X)^(-1) other.T``
 
         If column is specified returns
-        (scale) * (X.T X)^(-1)[column,column] if column is 0d
+        ``(scale) * (X.T X)^(-1)[column,column]`` if column is 0d
 
         OR
 
-        (scale) * (X.T X)^(-1)[column][:,column] if column is 1d
+        ``(scale) * (X.T X)^(-1)[column][:,column]`` if column is 1d
 
         """
         if (hasattr(self, 'mle_settings') and
@@ -927,7 +1142,8 @@ class LikelihoodModelResults(Results):
         else:
             dot_fun = np.dot
 
-        if cov_p is None and self.normalized_cov_params is None:
+        if (cov_p is None and self.normalized_cov_params is None and
+            not hasattr(self, 'cov_params_default')):
             raise ValueError('need covariance of parameters for computing '
                              '(unnormalized) covariances')
         if column is not None and (r_matrix is not None or other is not None):
@@ -937,11 +1153,11 @@ class LikelihoodModelResults(Results):
             raise ValueError('other can only be specified with r_matrix')
 
         if cov_p is None:
-            if scale is None:
-                scale = self.scale
             if hasattr(self, 'cov_params_default'):
                 cov_p = self.cov_params_default
             else:
+                if scale is None:
+                    scale = self.scale
                 cov_p = self.normalized_cov_params * scale
 
         if column is not None:
@@ -965,25 +1181,21 @@ class LikelihoodModelResults(Results):
             return cov_p
 
     #TODO: make sure this works as needed for GLMs
-    def t_test(self, r_matrix, q_matrix=None, cov_p=None, scale=None,
+    def t_test(self, r_matrix, cov_p=None, scale=None,
                use_t=None):
         """
-        Compute a t-test for a joint linear hypothesis of the form Rb = q
+        Compute a t-test for a each linear hypothesis of the form Rb = q
 
         Parameters
         ----------
         r_matrix : array-like, str, tuple
             - array : If an array is given, a p x k 2d array or length k 1d
-              array specifying the linear restrictions.
+              array specifying the linear restrictions. It is assumed
+              that the linear combination is equal to zero.
             - str : The full hypotheses to test can be given as a string.
               See the examples.
-            - tuple : A tuple of arrays in the form (R, q), since q_matrix is
-              deprecated.
-        q_matrix : array-like or scalar, optional
-            This is deprecated. See `r_matrix` and the examples for more
-            information on new usage. Can be either a scalar or a length p
-            row vector. If omitted and r_matrix is an array, `q_matrix` is
-            assumed to be a conformable array of zeros.
+            - tuple : A tuple of arrays in the form (R, q). If q is given,
+              can be either a scalar or a length p row vector.
         cov_p : array-like, optional
             An alternative estimate for the parameter covariance matrix.
             If None is given, self.normalized_cov_params is used.
@@ -996,6 +1208,13 @@ class LikelihoodModelResults(Results):
             distribution.
             If use_t is False, then the p-values are based on the normal
             distribution.
+
+        Returns
+        -------
+        res : ContrastResults instance
+            The results for the test are attributes of this results instance.
+            The available results have the same elements as the parameter table
+            in `summary()`.
 
         Examples
         --------
@@ -1012,10 +1231,14 @@ class LikelihoodModelResults(Results):
         r tests that the coefficients on the 5th and 6th independent
         variable are the same.
 
-        >>>T_Test = results.t_test(r)
-        >>>print(T_test)
-        <T contrast: effect=-1829.2025687192481, sd=455.39079425193762,
-        t=-4.0167754636411717, p=0.0015163772380899498, df_denom=9>
+        >>> T_test = results.t_test(r)
+        >>> print(T_test)
+                                     Test for Constraints
+        ==============================================================================
+                         coef    std err          t      P>|t|      [0.025      0.975]
+        ------------------------------------------------------------------------------
+        c0         -1829.2026    455.391     -4.017      0.003   -2859.368    -799.037
+        ==============================================================================
         >>> T_test.effect
         -1829.2025687192481
         >>> T_test.sd
@@ -1027,32 +1250,37 @@ class LikelihoodModelResults(Results):
 
         Alternatively, you can specify the hypothesis tests using a string
 
+        >>> from statsmodels.formula.api import ols
         >>> dta = sm.datasets.longley.load_pandas().data
         >>> formula = 'TOTEMP ~ GNPDEFL + GNP + UNEMP + ARMED + POP + YEAR'
         >>> results = ols(formula, dta).fit()
         >>> hypotheses = 'GNPDEFL = GNP, UNEMP = 2, YEAR/1829 = 1'
         >>> t_test = results.t_test(hypotheses)
         >>> print(t_test)
+                                     Test for Constraints
+        ==============================================================================
+                         coef    std err          t      P>|t|      [0.025      0.975]
+        ------------------------------------------------------------------------------
+        c0            15.0977     84.937      0.178      0.863    -177.042     207.238
+        c1            -2.0202      0.488     -8.231      0.000      -3.125      -0.915
+        c2             1.0001      0.249      0.000      1.000       0.437       1.563
+        ==============================================================================
 
-        See also
+        See Also
         ---------
         tvalues : individual t statistics
         f_test : for F tests
         patsy.DesignInfo.linear_constraint
         """
         from patsy import DesignInfo
-        if q_matrix is not None:
-            from warnings import warn
-            warn("The `q_matrix` keyword is deprecated and will be removed "
-                 "in 0.6.0. See the documentation for the new API",
-                 FutureWarning)
-            r_matrix = (r_matrix, q_matrix)
-        LC = DesignInfo(self.model.exog_names).linear_constraint(r_matrix)
+        names = self.model.data.param_names
+        LC = DesignInfo(names).linear_constraint(r_matrix)
         r_matrix, q_matrix = LC.coefs, LC.constants
         num_ttests = r_matrix.shape[0]
         num_params = r_matrix.shape[1]
 
-        if cov_p is None and self.normalized_cov_params is None:
+        if (cov_p is None and self.normalized_cov_params is None and
+            not hasattr(self, 'cov_params_default')):
             raise ValueError('Need covariance of parameters for computing '
                              'T statistics')
         if num_params != self.params.shape[0]:
@@ -1084,33 +1312,33 @@ class LikelihoodModelResults(Results):
             _sd = np.sqrt(self.cov_params(r_matrix=r_matrix, cov_p=cov_p))
         _t = (_effect - q_matrix) * recipr(_sd)
 
+        df_resid = getattr(self, 'df_resid_inference', self.df_resid)
+
         if use_t:
             return ContrastResults(effect=_effect, t=_t, sd=_sd,
-                                   df_denom=self.df_resid)
+                                   df_denom=df_resid)
         else:
             return ContrastResults(effect=_effect, statistic=_t, sd=_sd,
-                                   df_denom=self.df_resid,
+                                   df_denom=df_resid,
                                    distribution='norm')
 
-    def f_test(self, r_matrix, q_matrix=None, cov_p=None, scale=1.0,
-               invcov=None):
+    def f_test(self, r_matrix, cov_p=None, scale=1.0, invcov=None):
         """
         Compute the F-test for a joint linear hypothesis.
+
+        This is a special case of `wald_test` that always uses the F
+        distribution.
 
         Parameters
         ----------
         r_matrix : array-like, str, or tuple
             - array : An r x k array where r is the number of restrictions to
-              test and k is the number of regressors.
+              test and k is the number of regressors. It is assumed
+              that the linear combination is equal to zero.
             - str : The full hypotheses to test can be given as a string.
               See the examples.
-            - tuple : A tuple of arrays in the form (R, q), since q_matrix is
-              deprecated.
-        q_matrix : array-like
-            This is deprecated. See `r_matrix` and the examples for more
-            information on new usage. Can be either a scalar or a length p
-            row vector. If omitted and r_matrix is an array, `q_matrix` is
-            assumed to be a conformable array of zeros.
+            - tuple : A tuple of arrays in the form (R, q), ``q`` can be
+              either a scalar or a length k row vector.
         cov_p : array-like, optional
             An alternative estimate for the parameter covariance matrix.
             If None is given, self.normalized_cov_params is used.
@@ -1119,6 +1347,11 @@ class LikelihoodModelResults(Results):
         invcov : array-like, optional
             A q x q array to specify an inverse covariance matrix based on a
             restrictions matrix.
+
+        Returns
+        -------
+        res : ContrastResults instance
+            The results for the test are attributes of this results instance.
 
         Examples
         --------
@@ -1134,14 +1367,13 @@ class LikelihoodModelResults(Results):
         significantly different from zero.
 
         >>> print(results.f_test(A))
-        <F contrast: F=330.28533923463488, p=4.98403052872e-10,
-         df_denom=9, df_num=6>
+        <F test: F=array([[ 330.28533923]]), p=4.984030528700946e-10, df_denom=9, df_num=6>
 
         Compare this to
 
-        >>> results.F
+        >>> results.fvalue
         330.2853392346658
-        >>> results.F_p
+        >>> results.f_pvalue
         4.98403096572e-10
 
         >>> B = np.array(([0,0,1,-1,0,0,0],[0,0,0,0,0,1,-1]))
@@ -1151,8 +1383,7 @@ class LikelihoodModelResults(Results):
         are equal.
 
         >>> print(results.f_test(B))
-        <F contrast: F=9.740461873303655, p=0.00560528853174, df_denom=9,
-         df_num=2>
+        <F test: F=array([[ 9.74046187]]), p=0.005605288531708235, df_denom=9, df_num=2>
 
         Alternatively, you can specify the hypothesis tests using a string
 
@@ -1164,12 +1395,13 @@ class LikelihoodModelResults(Results):
         >>> hypotheses = '(GNPDEFL = GNP), (UNEMP = 2), (YEAR/1829 = 1)'
         >>> f_test = results.f_test(hypotheses)
         >>> print(f_test)
+        <F test: F=array([[ 144.17976065]]), p=6.322026217355609e-08, df_denom=9, df_num=3>
 
-        See also
+        See Also
         --------
-        statsmodels.contrasts
-        statsmodels.model.LikelihoodModelResults.wald_test
-        statsmodels.model.LikelihoodModelResults.t_test
+        statsmodels.stats.contrast.ContrastResults
+        wald_test
+        t_test
         patsy.DesignInfo.linear_constraint
 
         Notes
@@ -1182,13 +1414,13 @@ class LikelihoodModelResults(Results):
         design matrix of the model. There can be problems in non-OLS models
         where the rank of the covariance of the noise is not full.
         """
-        res = self.wald_test(r_matrix, q_matrix=q_matrix, cov_p=cov_p,
-                             scale=scale, invcov=invcov, use_f=True)
+        res = self.wald_test(r_matrix, cov_p=cov_p, scale=scale,
+                             invcov=invcov, use_f=True)
         return res
 
     #TODO: untested for GLMs?
-    def wald_test(self, r_matrix, q_matrix=None, cov_p=None, scale=1.0,
-                  invcov=None, use_f=None):
+    def wald_test(self, r_matrix, cov_p=None, scale=1.0, invcov=None,
+                  use_f=None):
         """
         Compute a Wald-test for a joint linear hypothesis.
 
@@ -1196,16 +1428,12 @@ class LikelihoodModelResults(Results):
         ----------
         r_matrix : array-like, str, or tuple
             - array : An r x k array where r is the number of restrictions to
-              test and k is the number of regressors.
+              test and k is the number of regressors. It is assumed that the
+              linear combination is equal to zero.
             - str : The full hypotheses to test can be given as a string.
               See the examples.
-            - tuple : A tuple of arrays in the form (R, q), since q_matrix is
-              deprecated.
-        q_matrix : array-like
-            This is deprecated. See `r_matrix` and the examples for more
-            information on new usage. Can be either a scalar or a length p
-            row vector. If omitted and r_matrix is an array, `q_matrix` is
-            assumed to be a conformable array of zeros.
+            - tuple : A tuple of arrays in the form (R, q), ``q`` can be
+              either a scalar or a length p row vector.
         cov_p : array-like, optional
             An alternative estimate for the parameter covariance matrix.
             If None is given, self.normalized_cov_params is used.
@@ -1216,16 +1444,21 @@ class LikelihoodModelResults(Results):
             restrictions matrix.
         use_f : bool
             If True, then the F-distribution is used. If False, then the
-            asymptotic distribution, chisquare is used.
+            asymptotic distribution, chisquare is used. If use_f is None, then
+            the F distribution is used if the model specifies that use_t is True.
             The test statistic is proportionally adjusted for the distribution
             by the number of constraints in the hypothesis.
 
+        Returns
+        -------
+        res : ContrastResults instance
+            The results for the test are attributes of this results instance.
 
         See also
         --------
-        statsmodels.contrasts
-        statsmodels.model.LikelihoodModelResults.f_test
-        statsmodels.model.LikelihoodModelResults.t_test
+        statsmodels.stats.contrast.ContrastResults
+        f_test
+        t_test
         patsy.DesignInfo.linear_constraint
 
         Notes
@@ -1243,17 +1476,12 @@ class LikelihoodModelResults(Results):
             use_f = (hasattr(self, 'use_t') and self.use_t)
 
         from patsy import DesignInfo
-        if q_matrix is not None:
-            from warnings import warn
-            warn("The `q_matrix` keyword is deprecated and will be removed "
-                 "in 0.6.0. See the documentation for the new API",
-                 FutureWarning)
-            r_matrix = (r_matrix, q_matrix)
-        LC = DesignInfo(self.model.exog_names).linear_constraint(r_matrix)
+        names = self.model.data.param_names
+        LC = DesignInfo(names).linear_constraint(r_matrix)
         r_matrix, q_matrix = LC.coefs, LC.constants
 
         if (self.normalized_cov_params is None and cov_p is None and
-                invcov is None):
+                invcov is None and not hasattr(self, 'cov_params_default')):
             raise ValueError('need covariance of parameters for computing '
                              'F statistics')
 
@@ -1283,13 +1511,153 @@ class LikelihoodModelResults(Results):
         else:
             F = np.dot(np.dot(Rbq.T, invcov), Rbq)
 
+        df_resid = getattr(self, 'df_resid_inference', self.df_resid)
         if use_f:
             F /= J
-            return ContrastResults(F=F, df_denom=self.df_resid,
+            return ContrastResults(F=F, df_denom=df_resid,
                                    df_num=invcov.shape[0])
         else:
             return ContrastResults(chi2=F, df_denom=J, statistic=F,
                                    distribution='chi2', distargs=(J,))
+
+
+    def wald_test_terms(self, skip_single=False, extra_constraints=None,
+                   combine_terms=None):
+        """
+        Compute a sequence of Wald tests for terms over multiple columns
+
+        This computes joined Wald tests for the hypothesis that all
+        coefficients corresponding to a `term` are zero.
+
+        `Terms` are defined by the underlying formula or by string matching.
+
+        Parameters
+        ----------
+        skip_single : boolean
+            If true, then terms that consist only of a single column and,
+            therefore, refers only to a single parameter is skipped.
+            If false, then all terms are included.
+        extra_constraints : ndarray
+            not tested yet
+        combine_terms : None or list of strings
+            Each string in this list is matched to the name of the terms or
+            the name of the exogenous variables. All columns whose name
+            includes that string are combined in one joint test.
+
+        Returns
+        -------
+        test_result : result instance
+            The result instance contains `table` which is a pandas DataFrame
+            with the test results: test statistic, degrees of freedom and
+            pvalues.
+
+        Examples
+        --------
+        >>> res_ols = ols("np.log(Days+1) ~ C(Duration, Sum)*C(Weight, Sum)", data).fit()
+        >>> res_ols.wald_test_terms()
+        <class 'statsmodels.stats.contrast.WaldTestResults'>
+                                                  F                P>F  df constraint  df denom
+        Intercept                        279.754525  2.37985521351e-22              1        51
+        C(Duration, Sum)                   5.367071    0.0245738436636              1        51
+        C(Weight, Sum)                    12.432445  3.99943118767e-05              2        51
+        C(Duration, Sum):C(Weight, Sum)    0.176002      0.83912310946              2        51
+
+        >>> res_poi = Poisson.from_formula("Days ~ C(Weight) * C(Duration)", \
+                                           data).fit(cov_type='HC0')
+        >>> wt = res_poi.wald_test_terms(skip_single=False, \
+                                         combine_terms=['Duration', 'Weight'])
+        >>> print(wt)
+                                    chi2             P>chi2  df constraint
+        Intercept              15.695625  7.43960374424e-05              1
+        C(Weight)              16.132616  0.000313940174705              2
+        C(Duration)             1.009147     0.315107378931              1
+        C(Weight):C(Duration)   0.216694     0.897315972824              2
+        Duration               11.187849     0.010752286833              3
+        Weight                 30.263368  4.32586407145e-06              4
+
+        """
+        # lazy import
+        from collections import defaultdict
+
+        result = self
+        if extra_constraints is None:
+            extra_constraints = []
+        if combine_terms is None:
+            combine_terms = []
+        design_info = getattr(result.model.data, 'design_info', None)
+
+        if design_info is None and extra_constraints is None:
+            raise ValueError('no constraints, nothing to do')
+
+
+        identity = np.eye(len(result.params))
+        constraints = []
+        combined = defaultdict(list)
+        if design_info is not None:
+            for term in design_info.terms:
+                cols = design_info.slice(term)
+                name = term.name()
+                constraint_matrix = identity[cols]
+
+                # check if in combined
+                for cname in combine_terms:
+                    if cname in name:
+                        combined[cname].append(constraint_matrix)
+
+                k_constraint = constraint_matrix.shape[0]
+                if skip_single:
+                    if k_constraint == 1:
+                        continue
+
+                constraints.append((name, constraint_matrix))
+
+            combined_constraints = []
+            for cname in combine_terms:
+                combined_constraints.append((cname, np.vstack(combined[cname])))
+        else:
+            # check by exog/params names if there is no formula info
+            for col, name in enumerate(result.model.exog_names):
+                constraint_matrix = identity[col]
+
+                # check if in combined
+                for cname in combine_terms:
+                    if cname in name:
+                        combined[cname].append(constraint_matrix)
+
+                if skip_single:
+                    continue
+
+                constraints.append((name, constraint_matrix))
+
+            combined_constraints = []
+            for cname in combine_terms:
+                combined_constraints.append((cname, np.vstack(combined[cname])))
+
+        use_t = result.use_t
+        distribution = ['chi2', 'F'][use_t]
+
+        res_wald = []
+        index = []
+        for name, constraint in constraints + combined_constraints + extra_constraints:
+            wt = result.wald_test(constraint)
+            row = [wt.statistic.item(), wt.pvalue, constraint.shape[0]]
+            if use_t:
+                row.append(wt.df_denom)
+            res_wald.append(row)
+            index.append(name)
+
+        # distribution nerutral names
+        col_names = ['statistic', 'pvalue', 'df_constraint']
+        if use_t:
+            col_names.append('df_denom')
+        # TODO: maybe move DataFrame creation to results class
+        from pandas import DataFrame
+        table = DataFrame(res_wald, index=index, columns=col_names)
+        res = WaldTestResults(None, distribution, None, table=table)
+        # TODO: remove temp again, added for testing
+        res.temp = constraints + combined_constraints + extra_constraints
+        return res
+
 
     def conf_int(self, alpha=.05, cols=None, method='default'):
         """
@@ -1298,7 +1666,7 @@ class LikelihoodModelResults(Results):
         Parameters
         ----------
         alpha : float, optional
-            The `alpha` level for the confidence interval.
+            The significance level for the confidence interval.
             ie., The default `alpha` = .05 returns a 95% confidence interval.
         cols : array-like, optional
             `cols` specifies which confidence intervals to return
@@ -1306,7 +1674,7 @@ class LikelihoodModelResults(Results):
             Not Implemented Yet
             Method to estimate the confidence_interval.
             "Default" : uses self.bse which is based on inverse Hessian for MLE
-            "jhj" :
+            "hjjh" :
             "jac" :
             "boot-bse"
             "boot_quant"
@@ -1316,7 +1684,9 @@ class LikelihoodModelResults(Results):
         Returns
         --------
         conf_int : array
-            Each row contains [lower, upper] confidence interval
+            Each row contains [lower, upper] limits of the confidence interval
+            for the corresponding parameter. The first column contains all
+            lower, the second column contains all upper limits.
 
         Examples
         --------
@@ -1345,8 +1715,14 @@ class LikelihoodModelResults(Results):
         method.
         """
         bse = self.bse
-        dist = stats.norm
-        q = dist.ppf(1 - alpha / 2)
+
+        if self.use_t:
+            dist = stats.t
+            df_resid = getattr(self, 'df_resid_inference', self.df_resid)
+            q = dist.ppf(1 - alpha / 2, df_resid)
+        else:
+            dist = stats.norm
+            q = dist.ppf(1 - alpha / 2)
 
         if cols is None:
             lower = self.params - q * bse
@@ -1419,10 +1795,20 @@ class LikelihoodModelResults(Results):
         Not fully tested for time series models, tsa, and might delete too much
         for prediction or not all that would be possible.
 
-        The list of arrays to delete is maintained as an attribute of the
-        result and model instance, except for cached values. These lists could
-        be changed before calling remove_data.
+        The lists of arrays to delete are maintained as attributes of
+        the result and model instance, except for cached values. These
+        lists could be changed before calling remove_data.
 
+        The attributes to remove are named in:
+
+        model._data_attr : arrays attached to both the model instance
+            and the results instance with the same attribute name.
+
+        result.data_in_cache : arrays that may exist as values in
+            result._cache (TODO : should privatize name)
+
+        result._data_attr_model : arrays attached to the model
+            instance but not to the results instance
         '''
         def wipe(obj, att):
             #get to last element in attribute path
@@ -1439,8 +1825,9 @@ class LikelihoodModelResults(Results):
             except AttributeError:
                 pass
 
+        model_only = ['model.' + i for i in getattr(self, "_data_attr_model", [])]
         model_attr = ['model.' + i for i in self.model._data_attr]
-        for att in self._data_attr + model_attr:
+        for att in self._data_attr + model_attr + model_only:
             #print('removing', att)
             wipe(self, att)
 
@@ -1499,10 +1886,10 @@ class ResultMixin(object):
         return -2 * self.llf + np.log(self.nobs) * (self.df_modelwc)
 
     @cache_readonly
-    def jacv(self):
+    def score_obsv(self):
         '''cached Jacobian of log-likelihood
         '''
-        return self.model.jac(self.params)
+        return self.model.score_obs(self.params)
 
     @cache_readonly
     def hessv(self):
@@ -1521,7 +1908,7 @@ class ResultMixin(object):
         ##      raise ValueError('need to call fit first')
         ##      #self.fit()
         ##  self.jacv = jacv = self.jac(self._results.params)
-        jacv = self.jacv
+        jacv = self.score_obsv
         return np.linalg.inv(np.dot(jacv.T, jacv))
 
     @cache_readonly
@@ -1532,11 +1919,10 @@ class ResultMixin(object):
 
         name should be covhjh
         '''
-        jacv = self.jacv
-        ##  hessv = self.hessv
-        ##  hessinv = np.linalg.inv(hessv)
-        ##  self.hessinv = hessinv
-        hessinv = self.cov_params()
+        jacv = self.score_obsv
+        hessv = self.hessv
+        hessinv = np.linalg.inv(hessv)
+        ##  self.hessinv = hessin = self.cov_params()
         return np.dot(hessinv, np.dot(np.dot(jacv.T, jacv), hessinv))
 
     @cache_readonly
@@ -1590,7 +1976,7 @@ class ResultMixin(object):
         print(self.model.__class__)
         hascloneattr = True if hasattr(self, 'cloneattr') else False
         for i in range(nrep):
-            rvsind = np.random.randint(self.nobs - 1, size=self.nobs)
+            rvsind = np.random.randint(self.nobs, size=self.nobs)
             #this needs to set startparam and get other defining attributes
             #need a clone method on model
             fitmod = self.model.__class__(self.endog[rvsind],

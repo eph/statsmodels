@@ -18,8 +18,11 @@ from numpy.testing import (assert_almost_equal, assert_equal, assert_,
                           assert_allclose)
 
 from statsmodels.stats.multitest import (multipletests, fdrcorrection,
-                                         fdrcorrection_twostage)
+                                         fdrcorrection_twostage,
+                                         NullDistribution,
+                                         local_fdr)
 from statsmodels.stats.multicomp import tukeyhsd
+from scipy.stats.distributions import norm
 
 pval0 = np.array([0.838541367553 , 0.642193923795 , 0.680845947633 ,
         0.967833824309 , 0.71626938238 , 0.177096952723 , 5.23656777208e-005 ,
@@ -198,34 +201,38 @@ class CheckMultiTestsMixin(object):
         assert_almost_equal(pvalscorr, res_multtest[:,6], 15)
 
 class TestMultiTests1(CheckMultiTestsMixin):
-    def __init__(self):
-        self.methods =  ['b', 's', 'sh', 'hs', 'h', 'fdr_i', 'fdr_n']
-        self.alpha = 0.1
-        self.res2 = res_multtest1
+    @classmethod
+    def setup_class(cls):
+        cls.methods =  ['b', 's', 'sh', 'hs', 'h', 'fdr_i', 'fdr_n']
+        cls.alpha = 0.1
+        cls.res2 = res_multtest1
 
 class TestMultiTests2(CheckMultiTestsMixin):
     # case: all hypothesis rejected (except 'b' and 's'
-    def __init__(self):
-        self.methods =  ['b', 's', 'sh', 'hs', 'h', 'fdr_i', 'fdr_n']
-        self.alpha = 0.05
-        self.res2 = res_multtest2
+    @classmethod
+    def setup_class(cls):
+        cls.methods =  ['b', 's', 'sh', 'hs', 'h', 'fdr_i', 'fdr_n']
+        cls.alpha = 0.05
+        cls.res2 = res_multtest2
 
 class TestMultiTests3(CheckMultiTestsMixin):
-    def __init__(self):
-        self.methods =  ['b', 's', 'sh', 'hs', 'h', 'fdr_i', 'fdr_n',
+    @classmethod
+    def setup_class(cls):
+        cls.methods =  ['b', 's', 'sh', 'hs', 'h', 'fdr_i', 'fdr_n',
                          'fdr_tsbh']
-        self.alpha = 0.05
-        self.res2 = res0_large
+        cls.alpha = 0.05
+        cls.res2 = res0_large
 
 class TestMultiTests4(CheckMultiTestsMixin):
     # in simulations, all two stage fdr, fdr_tsbky, fdr_tsbh, fdr_gbs, have in
     # some cases (cases with large Alternative) an FDR that looks too large
     # this is the first case #rejected = 12, DGP : has 10 false
-    def __init__(self):
-        self.methods =  ['b', 's', 'sh', 'hs', 'h', 'fdr_i', 'fdr_n',
+    @classmethod
+    def setup_class(cls):
+        cls.methods =  ['b', 's', 'sh', 'hs', 'h', 'fdr_i', 'fdr_n',
                          'fdr_tsbh']
-        self.alpha = 0.05
-        self.res2 = res_multtest3
+        cls.alpha = 0.05
+        cls.res2 = res_multtest3
 
 def test_pvalcorrection_reject():
     # consistency test for reject boolean and pvalscorr
@@ -348,3 +355,73 @@ def test_tukeyhsd():
     assert_almost_equal(confint, res[:, 1:3], decimal=2)
     assert_equal(reject, res[:, 3]<0.05)
 
+
+def test_local_fdr():
+
+    # Create a mixed population of Z-scores: 1000 standard normal and
+    # 20 uniformly distributed between 3 and 4.
+    grid = np.linspace(0.001, 0.999, 1000)
+    z0 = norm.ppf(grid)
+    z1 = np.linspace(3, 4, 20)
+    zs = np.concatenate((z0, z1))
+
+    # Exact local FDR for U(3, 4) component.
+    f1 = np.exp(-z1**2 / 2) / np.sqrt(2*np.pi)
+    r = len(z1) / float(len(z0) + len(z1))
+    f1 /= (1 - r) * f1 + r
+
+    fdr = local_fdr(zs)
+    fdr1 = fdr[len(z0):]
+
+    assert_allclose(f1, fdr1, rtol=0.05, atol=0.1)
+
+
+def test_null_distribution():
+
+    # Create a mixed population of Z-scores: 1000 standard normal and
+    # 20 uniformly distributed between 3 and 4.
+    grid = np.linspace(0.001, 0.999, 1000)
+    z0 = norm.ppf(grid)
+    z1 = np.linspace(3, 4, 20)
+    zs = np.concatenate((z0, z1))
+    emp_null = NullDistribution(zs, estimate_null_proportion=True)
+
+    assert_allclose(emp_null.mean, 0, atol=1e-5, rtol=1e-5)
+    assert_allclose(emp_null.sd, 1, atol=1e-5, rtol=1e-2)
+    assert_allclose(emp_null.null_proportion, 0.98, atol=1e-5, rtol=1e-2)
+
+    # consistency check
+    assert_allclose(emp_null.pdf(np.r_[-1, 0, 1]),
+                    norm.pdf(np.r_[-1, 0, 1], loc=emp_null.mean, scale=emp_null.sd),
+                    rtol=1e-13)
+
+
+def test_null_constrained():
+
+    # Create a mixed population of Z-scores: 1000 standard normal and
+    # 20 uniformly distributed between 3 and 4.
+    grid = np.linspace(0.001, 0.999, 1000)
+    z0 = norm.ppf(grid)
+    z1 = np.linspace(3, 4, 20)
+    zs = np.concatenate((z0, z1))
+
+    for estimate_mean in False,True:
+        for estimate_scale in False,True:
+            for estimate_prob in False,True:
+
+                emp_null = NullDistribution(zs, estimate_mean=estimate_mean,
+                                            estimate_scale=estimate_scale,
+                                            estimate_null_proportion=estimate_prob)
+
+                if not estimate_mean:
+                    assert_allclose(emp_null.mean, 0, atol=1e-5, rtol=1e-5)
+                if not estimate_scale:
+                    assert_allclose(emp_null.sd, 1, atol=1e-5, rtol=1e-2)
+                if not estimate_prob:
+                    assert_allclose(emp_null.null_proportion, 1, atol=1e-5, rtol=1e-2)
+
+                # consistency check
+                assert_allclose(emp_null.pdf(np.r_[-1, 0, 1]),
+                                norm.pdf(np.r_[-1, 0, 1], loc=emp_null.mean,
+                                         scale=emp_null.sd),
+                                rtol=1e-13)

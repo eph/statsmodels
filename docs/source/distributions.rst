@@ -1,3 +1,6 @@
+.. module:: statsmodels.sandbox.distributions
+   :synopsis: Probability distributions
+
 .. currentmodule:: statsmodels.sandbox.distributions
 
 .. _distributions:
@@ -12,6 +15,9 @@ distributions.
 Empirical Distributions
 -----------------------
 
+.. module:: statsmodels.distributions.empirical_distribution
+   :synopsis: Tools for working with empirical distributions
+
 .. currentmodule:: statsmodels.distributions.empirical_distribution
 
 .. autosummary::
@@ -19,10 +25,14 @@ Empirical Distributions
 
    ECDF
    StepFunction
+   monotone_fn_inverter
 
 Distribution Extras
 -------------------
 
+
+.. module:: statsmodels.sandbox.distributions.extras
+   :synopsis: Probability distributions and random number generators
 
 .. currentmodule:: statsmodels.sandbox.distributions.extras
 
@@ -63,6 +73,9 @@ existing univariate distribution. `Transf_gen` is a class that can generate a ne
 distribution from a monotonic transformation, `TransfTwo_gen` can use hump-shaped
 or u-shaped transformation, such as abs or square. The remaining objects are
 special cases.
+
+.. module:: statsmodels.sandbox.distributions.transformed
+   :synopsis: Experimental probability distributions and random number generators
 
 .. currentmodule:: statsmodels.sandbox.distributions.transformed
 

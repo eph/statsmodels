@@ -6,8 +6,8 @@ import statsmodels.api as sm
 nparam = sm.nonparametric
 
 
-class MyTest(object):
-    def setUp(self):
+class KDETestBase(object):
+    def setup(self):
         nobs = 60
         np.random.seed(123456)
         self.o = np.random.binomial(2, 0.7, size=(nobs, 1))
@@ -61,7 +61,7 @@ class MyTest(object):
         self.weights = np.random.random(nobs)
 
 
-class TestKDEUnivariate(MyTest):
+class TestKDEUnivariate(KDETestBase):
 
     def test_pdf_non_fft(self):
 
@@ -115,7 +115,7 @@ class TestKDEUnivariate(MyTest):
 
 
 
-class TestKDEMultivariate(MyTest):
+class TestKDEMultivariate(KDETestBase):
     @dec.slow
     def test_pdf_mixeddata_CV_LS(self):
         dens_u = nparam.KDEMultivariate(data=[self.c1, self.o, self.o2],
@@ -261,7 +261,7 @@ class TestKDEMultivariate(MyTest):
         npt.assert_equal(dens.bw, bw_user)
 
 
-class TestKDEMultivariateConditional(MyTest):
+class TestKDEMultivariateConditional(KDETestBase):
     @dec.slow
     def test_mixeddata_CV_LS(self):
         dens_ls = nparam.KDEMultivariateConditional(endog=[self.Italy_gdp],
@@ -388,6 +388,5 @@ class TestKDEMultivariateConditional(MyTest):
         npt.assert_equal(dens.bw, bw_user)
 
 if __name__ == "__main__":
-    import nose
-    nose.runmodule(argv=[__file__,'-vvs','-x','--pdb'],
-                       exit=False)
+    import pytest
+    pytest.main([__file__, '-vvs', '-x', '--pdb'])

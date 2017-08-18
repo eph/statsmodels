@@ -1,4 +1,4 @@
-#! /usr/bin/env python
+#!/usr/bin/env python
 """
 Run this script to convert dataset documentation to ReST files. Relies
 on the meta-information from the datasets of the currently installed version.
@@ -59,8 +59,8 @@ if __name__ == "__main__":
                                              title_='='*len(title),
                                              DESCRIPTION=descr, NOTES=notes,
                                              SOURCE=source, COPYRIGHT=copyr)
-        to_write, filehash = hash_funcs.check_hash(write_file,
-                                                   data_mod.__name__)
+        to_write, filehash = hash_funcs.check_hash(write_file.encode(),
+                                                   data_mod.__name__.encode())
         if not to_write:
             print("Hash has not changed for docstring of dataset "
                   "{}".format(dataset))

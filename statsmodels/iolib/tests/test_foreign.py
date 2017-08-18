@@ -1,11 +1,12 @@
 """
 Tests for iolib/foreign.py
 """
+from statsmodels.compat.testing import skipif
 import os
 import warnings
 from datetime import datetime
 
-from numpy.testing import *
+from numpy.testing import assert_array_equal, assert_, assert_equal, dec
 import numpy as np
 from pandas import DataFrame, isnull
 import pandas.util.testing as ptesting
@@ -17,9 +18,8 @@ from statsmodels.iolib.foreign import (StataWriter, genfromdta,
 from statsmodels.datasets import macrodata
 
 
-import pandas
-pandas_old = int(pandas.__version__.split('.')[1]) < 9
-
+from statsmodels.compat.pandas import version as pandas_version
+pandas_old = pandas_version < '0.9'
 
 # Test precisions
 DECIMAL_4 = 4
@@ -116,7 +116,6 @@ def test_stata_writer_unicode():
     # make sure to test with characters outside the latin-1 encoding
     pass
 
-@dec.skipif(pandas_old)
 def test_genfromdta_datetime():
     results = [(datetime(2006, 11, 19, 23, 13, 20), 1479596223000,
             datetime(2010, 1, 20), datetime(2010, 1, 8), datetime(2010, 1, 1),
@@ -125,8 +124,9 @@ def test_genfromdta_datetime():
             datetime(1948, 6, 10), datetime(1955, 1, 1), datetime(1955, 7, 1),
             datetime(1955, 1, 1), datetime(2, 1, 1))]
     with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter('always')
         dta = genfromdta(os.path.join(curdir, "results/time_series_examples.dta"))
-        assert_(len(w) == 1)  # should get a warning for that format.
+        assert_(len(w) > 0)  # should get a warning for that format.
 
     assert_array_equal(dta[0].tolist(), results[0])
     assert_array_equal(dta[1].tolist(), results[1])
@@ -135,8 +135,8 @@ def test_genfromdta_datetime():
         dta = genfromdta(os.path.join(curdir, "results/time_series_examples.dta"),
                          pandas=True)
 
-    assert_array_equal(dta.irow(0).tolist(), results[0])
-    assert_array_equal(dta.irow(1).tolist(), results[1])
+    assert_array_equal(dta.iloc[0].tolist(), results[0])
+    assert_array_equal(dta.iloc[1].tolist(), results[1])
 
 def test_date_converters():
     ms = [-1479597200000, -1e6, -1e5, -100, 1e5, 1e6, 1479597200000]
@@ -168,7 +168,7 @@ def test_date_converters():
         assert_equal(_datetime_to_stata_elapsed(
                      _stata_elapsed_date_to_datetime(i, "ty"), "ty"), i)
 
-@dec.skipif(pandas_old)
+@skipif(pandas_old, 'pandas too old')
 def test_datetime_roundtrip():
     dta = np.array([(1, datetime(2010, 1, 1), 2),
                     (2, datetime(2010, 2, 1), 3),
@@ -191,6 +191,5 @@ def test_datetime_roundtrip():
 
 
 if __name__ == "__main__":
-    import nose
-    nose.runmodule(argv=[__file__,'-vvs','-x','--pdb'],
-                       exit=False)
+    import pytest
+    pytest.main([__file__, '-vvs', '-x', '--pdb'])

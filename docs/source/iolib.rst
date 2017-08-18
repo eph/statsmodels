@@ -14,11 +14,13 @@ Users can also leverage the powerful input/output functions provided by :ref:`pa
 Examples
 --------
 
-    `SimpleTable: Basic example <examples/generated/example_wls.html#ols-vs-wls>`_
+    `SimpleTable: Basic example <examples/notebooks/generated/wls.html#ols-vs-wls>`__
 
 Module Reference
 ----------------
 
+.. module:: statsmodels.iolib
+   :synopsis: Tools for reading datasets and producing summary output
 
 .. autosummary::
    :toctree: generated/
@@ -31,3 +33,14 @@ Module Reference
    table.csv2st
    smpickle.save_pickle
    smpickle.load_pickle
+
+
+The following are classes and functions used to return the summary of
+estimation results, and mostly intended for internal use. There are currently
+two versions for creating summaries.
+
+.. autosummary::
+   :toctree: generated/
+
+   summary.Summary
+   summary2.Summary

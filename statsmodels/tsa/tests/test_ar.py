@@ -4,12 +4,13 @@ Test AR Model
 import statsmodels.api as sm
 from statsmodels.compat.python import range
 from statsmodels.tsa.ar_model import AR
-from numpy.testing import (assert_almost_equal, assert_equal, assert_allclose,
-                           assert_)
+from numpy.testing import (assert_almost_equal, assert_allclose, assert_)
+from statsmodels.tools.testing import assert_equal
 from .results import results_ar
 import numpy as np
 import numpy.testing as npt
-from pandas import Series, Index
+from pandas import Series, Index, DatetimeIndex, PeriodIndex
+
 
 DECIMAL_6 = 6
 DECIMAL_5 = 5
@@ -45,7 +46,7 @@ class TestAROLSConstant(CheckARMixin):
     Test AR fit by OLS with a constant.
     """
     @classmethod
-    def setupClass(cls):
+    def setup_class(cls):
         data = sm.datasets.sunspots.load()
         cls.res1 = AR(data.endog).fit(maxlag=9, method='cmle')
         cls.res2 = results_ar.ARResultsOLS(constant=True)
@@ -82,7 +83,7 @@ class TestAROLSNoConstant(CheckARMixin):
     Test AR fit by OLS without a constant.
     """
     @classmethod
-    def setupClass(cls):
+    def setup_class(cls):
         data = sm.datasets.sunspots.load()
         cls.res1 = AR(data.endog).fit(maxlag=9,method='cmle',trend='nc')
         cls.res2 = results_ar.ARResultsOLS(constant=False)
@@ -114,16 +115,23 @@ class TestAROLSNoConstant(CheckARMixin):
                 self.res2.FVOLSn15start312, DECIMAL_4)
 
         #class TestARMLEConstant(CheckAR):
+
+
 class TestARMLEConstant(object):
     @classmethod
-    def setupClass(cls):
+    def setup_class(cls):
         data = sm.datasets.sunspots.load()
         cls.res1 = AR(data.endog).fit(maxlag=9,method="mle", disp=-1)
         cls.res2 = results_ar.ARResultsMLE(constant=True)
 
     def test_predict(self):
         model = self.res1.model
-        params = self.res1.params
+        # for some reason convergence is off in 1 out of 10 runs on
+        # some platforms. i've never been able to replicate. see #910
+        params = np.array([ 5.66817602,  1.16071069, -0.39538222,
+                           -0.16634055,  0.15044614, -0.09439266,
+                           0.00906289,  0.05205291, -0.08584362,
+                           0.25239198])
         assert_almost_equal(model.predict(params), self.res2.FVMLEdefault,
                 DECIMAL_4)
         assert_almost_equal(model.predict(params, start=9, end=308),
@@ -149,6 +157,12 @@ class TestARMLEConstant(object):
                 self.res2.FVMLEstart2end7, DECIMAL_4)
 
     def test_dynamic_predict(self):
+        # for some reason convergence is off in 1 out of 10 runs on
+        # some platforms. i've never been able to replicate. see #910
+        params = np.array([ 5.66817602,  1.16071069, -0.39538222,
+                           -0.16634055,  0.15044614, -0.09439266,
+                           0.00906289,  0.05205291, -0.08584362,
+                           0.25239198])
         res1 = self.res1
         res2 = self.res2
 
@@ -157,58 +171,58 @@ class TestARMLEConstant(object):
 
         # 9, 51
         start, end = 9, 51
-        fv = res1.predict(start, end, dynamic=True)
+        fv = res1.model.predict(params, start, end, dynamic=True)
         assert_allclose(fv, res2.fcdyn[start:end+1], rtol=rtol)
 
         # 9, 308
         start, end = 9, 308
-        fv = res1.predict(start, end, dynamic=True)
+        fv = res1.model.predict(params, start, end, dynamic=True)
         assert_allclose(fv, res2.fcdyn[start:end+1], rtol=rtol)
 
         # 9, 333
         start, end = 9, 333
-        fv = res1.predict(start, end, dynamic=True)
+        fv = res1.model.predict(params, start, end, dynamic=True)
         assert_allclose(fv, res2.fcdyn[start:end+1], rtol=rtol)
 
         # 100, 151
         start, end = 100, 151
-        fv = res1.predict(start, end, dynamic=True)
+        fv = res1.model.predict(params, start, end, dynamic=True)
         assert_allclose(fv, res2.fcdyn2[start:end+1], rtol=rtol)
 
         # 100, 308
         start, end = 100, 308
-        fv = res1.predict(start, end, dynamic=True)
+        fv = res1.model.predict(params, start, end, dynamic=True)
         assert_allclose(fv, res2.fcdyn2[start:end+1], rtol=rtol)
 
         # 100, 333
         start, end = 100, 333
-        fv = res1.predict(start, end, dynamic=True)
+        fv = res1.model.predict(params, start, end, dynamic=True)
         assert_allclose(fv, res2.fcdyn2[start:end+1], rtol=rtol)
 
         # 308, 308
         start, end = 308, 308
-        fv = res1.predict(start, end, dynamic=True)
+        fv = res1.model.predict(params, start, end, dynamic=True)
         assert_allclose(fv, res2.fcdyn3[start:end+1], rtol=rtol)
 
         # 308, 333
         start, end = 308, 333
-        fv = res1.predict(start, end, dynamic=True)
+        fv = res1.model.predict(params, start, end, dynamic=True)
         assert_allclose(fv, res2.fcdyn3[start:end+1], rtol=rtol)
 
         # 309, 333
         start, end = 309, 333
-        fv = res1.predict(start, end, dynamic=True)
+        fv = res1.model.predict(params, start, end, dynamic=True)
         assert_allclose(fv, res2.fcdyn4[start:end+1], rtol=rtol)
 
         # None, None
         start, end = None, None
-        fv = res1.predict(dynamic=True)
+        fv = res1.model.predict(params, dynamic=True)
         assert_allclose(fv, res2.fcdyn[9:309], rtol=rtol)
 
 
 class TestAutolagAR(object):
     @classmethod
-    def setupClass(cls):
+    def setup_class(cls):
         data = sm.datasets.sunspots.load()
         endog = data.endog
         results = []
@@ -220,7 +234,6 @@ class TestAutolagAR(object):
             k_ar = r.k_ar
             k_trend = r.k_trend
             log_sigma2 = np.log(r.sigma2)
-            #import ipdb; ipdb.set_trace()
             aic = r.aic
             aic = (aic - log_sigma2) * (1 + k_ar)/(1 + k_ar + k_trend)
             aic += log_sigma2
@@ -247,19 +260,17 @@ class TestAutolagAR(object):
 def test_ar_dates():
     # just make sure they work
     data = sm.datasets.sunspots.load()
-    dates = sm.tsa.datetools.dates_from_range('1700', length=len(data.endog))
+    dates = DatetimeIndex(start='1700', periods=len(data.endog), freq='A')
     endog = Series(data.endog, index=dates)
     ar_model = sm.tsa.AR(endog, freq='A').fit(maxlag=9, method='mle', disp=-1)
     pred = ar_model.predict(start='2005', end='2015')
-    predict_dates = sm.tsa.datetools.dates_from_range('2005', '2015')
-    from pandas import DatetimeIndex  # pylint: disable-msg=E0611
-    predict_dates = DatetimeIndex(predict_dates, freq='infer')
+    predict_dates = DatetimeIndex(start='2005', end='2016', freq='A')[:11]
 
     assert_equal(ar_model.data.predict_dates, predict_dates)
     assert_equal(pred.index, predict_dates)
 
 def test_ar_named_series():
-    dates = sm.tsa.datetools.dates_from_range("2011m1", length=72)
+    dates = PeriodIndex(start="2011-1", periods=72, freq='M')
     y = Series(np.random.randn(72), name="foobar", index=dates)
     results = sm.tsa.AR(y).fit(2)
     assert_(results.params.index.equals(Index(["const", "L1.foobar",
@@ -269,16 +280,40 @@ def test_ar_start_params():
     # fix 236
     # smoke test
     data = sm.datasets.sunspots.load()
-    res = AR(data.endog).fit(maxlag=9, start_params=0.1*np.ones(10.),
-                             method="mle", disp=-1)
+    res = AR(data.endog).fit(maxlag=9, start_params=0.1*np.ones(10),
+                             method="mle", disp=-1, maxiter=100)
 
 def test_ar_series():
     # smoke test for 773
     dta = sm.datasets.macrodata.load_pandas().data["cpi"].diff().dropna()
-    dates = sm.tsa.datetools.dates_from_range("1959Q1", length=len(dta))
+    dates = PeriodIndex(start='1959Q1', periods=len(dta), freq='Q')
     dta.index = dates
     ar = AR(dta).fit(maxlags=15)
     ar.bse
+
+
+def test_ar_select_order():
+    # 2118
+    np.random.seed(12345)
+    y = sm.tsa.arma_generate_sample([1, -.75, .3], [1], 100)
+    ts = Series(y, index=DatetimeIndex(start='1/1/1990', periods=100,
+                                           freq='M'))
+    ar = AR(ts)
+    res = ar.select_order(maxlag=12, ic='aic')
+    assert_(res == 2)
+
+# GH 2658
+def test_ar_select_order_tstat():
+    rs = np.random.RandomState(123)
+    tau = 25
+    y = rs.randn(tau)
+    ts = Series(y, index=DatetimeIndex(start='1/1/1990', periods=tau,
+                                   freq='M'))
+
+    ar = AR(ts)
+    res = ar.select_order(maxlag=5, ic='t-stat')
+    assert_equal(res, 0)
+
 
 
 #TODO: likelihood for ARX model?

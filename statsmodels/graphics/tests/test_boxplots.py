@@ -1,5 +1,6 @@
+from statsmodels.compat.testing import skipif
+
 import numpy as np
-from numpy.testing import dec
 
 from statsmodels.graphics.boxplots import violinplot, beanplot
 from statsmodels.datasets import anes96
@@ -12,7 +13,7 @@ except:
     have_matplotlib = False
 
 
-@dec.skipif(not have_matplotlib)
+@skipif(not have_matplotlib, reason='matplotlib not available')
 def test_violinplot_beanplot():
     # Test violinplot and beanplot with the same dataset.
     data = anes96.load_pandas()
@@ -39,5 +40,39 @@ def test_violinplot_beanplot():
              plot_opts={'cutoff_val':5, 'cutoff_type':'abs',
                         'label_fontsize':'small',
                         'label_rotation':30})
+
+    plt.close(fig)
+
+    fig = plt.figure()
+    ax = fig.add_subplot(111)
+    beanplot(age, ax=ax, labels=labels, jitter=True,
+             plot_opts={'cutoff_val': 5, 'cutoff_type': 'abs',
+                        'label_fontsize': 'small',
+                        'label_rotation': 30})
+
+    plt.close(fig)
+
+    fig = plt.figure()
+    ax = fig.add_subplot(111)
+    beanplot(age, ax=ax, labels=labels, jitter=True, side='right',
+             plot_opts={'cutoff_val': 5, 'cutoff_type': 'abs',
+                        'label_fontsize': 'small',
+                        'label_rotation': 30})
+
+    plt.close(fig)
+
+    fig = plt.figure()
+    ax = fig.add_subplot(111)
+    beanplot(age, ax=ax, labels=labels, jitter=True, side='left',
+             plot_opts={'cutoff_val': 5, 'cutoff_type': 'abs',
+                        'label_fontsize': 'small',
+                        'label_rotation': 30})
+
+    plt.close(fig)
+
+    fig = plt.figure()
+    ax = fig.add_subplot(111)
+    beanplot(age, ax=ax, labels=labels,
+             plot_opts={'bean_legend_text': 'text'})
 
     plt.close(fig)

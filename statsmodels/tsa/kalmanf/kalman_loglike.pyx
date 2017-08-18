@@ -21,16 +21,16 @@ cdef extern from "math.h":
     double log(double x)
 
 cdef extern from "capsule.h":
-    void* SMCapsule_AsVoidPtr(object ptr)
+    void* Capsule_AsVoidPtr(object ptr)
 
-from blas_lapack cimport dgemm_t, zgemm_t, ddot_t, dgemv_t, zgemv_t, zdotu_t
+from statsmodels.src.blas_lapack cimport dgemm_t, zgemm_t, ddot_t, dgemv_t, zgemv_t, zdotu_t
 
-cdef dgemm_t *dgemm = <dgemm_t*>SMCapsule_AsVoidPtr(scipy.linalg.blas.get_blas_funcs('gemm', dtype=float64)._cpointer)
-cdef zgemm_t *zgemm = <zgemm_t*>SMCapsule_AsVoidPtr(scipy.linalg.blas.get_blas_funcs('gemm', dtype=complex128)._cpointer)
-cdef ddot_t *ddot = <ddot_t*>SMCapsule_AsVoidPtr(scipy.linalg.blas.get_blas_funcs('dot', dtype=float64)._cpointer)
-cdef dgemv_t *dgemv = <dgemv_t*>SMCapsule_AsVoidPtr(scipy.linalg.blas.get_blas_funcs('gemv', dtype=float64)._cpointer)
-cdef zdotu_t *zdotu = <zdotu_t*>SMCapsule_AsVoidPtr(scipy.linalg.blas.get_blas_funcs('dotu', dtype=complex128)._cpointer)
-cdef zgemv_t *zgemv = <zgemv_t*>SMCapsule_AsVoidPtr(scipy.linalg.blas.get_blas_funcs('gemv', dtype=complex128)._cpointer)
+cdef dgemm_t *dgemm = <dgemm_t*>Capsule_AsVoidPtr(scipy.linalg.blas.get_blas_funcs('gemm', dtype=float64)._cpointer)
+cdef zgemm_t *zgemm = <zgemm_t*>Capsule_AsVoidPtr(scipy.linalg.blas.get_blas_funcs('gemm', dtype=complex128)._cpointer)
+cdef ddot_t *ddot = <ddot_t*>Capsule_AsVoidPtr(scipy.linalg.blas.get_blas_funcs('dot', dtype=float64)._cpointer)
+cdef dgemv_t *dgemv = <dgemv_t*>Capsule_AsVoidPtr(scipy.linalg.blas.get_blas_funcs('gemv', dtype=float64)._cpointer)
+cdef zdotu_t *zdotu = <zdotu_t*>Capsule_AsVoidPtr(scipy.linalg.blas.get_blas_funcs('dotu', dtype=complex128)._cpointer)
+cdef zgemv_t *zgemv = <zgemv_t*>Capsule_AsVoidPtr(scipy.linalg.blas.get_blas_funcs('gemv', dtype=complex128)._cpointer)
 
 
 @cython.boundscheck(False)
@@ -225,8 +225,8 @@ def kalman_filter_complex(dcomplex[:] y,
         dcomplex[::1,:] alpha = PyArray_ZEROS(2, mshape, cnp.NPY_CDOUBLE, FORTRAN)
         int lda = alpha.strides[1]/sizeof(dcomplex)
         # initial variance
-        dcomplex[::1,:] P = dot(pinv(identity(r**2)-kron(T_mat, T_mat)),
-                            dot(R_mat,R_mat.T).ravel('F')).reshape(r,r, order='F')
+        dcomplex[::1,:] P = asfortranarray(dot(pinv(identity(r**2)-kron(T_mat, T_mat)),
+                                           dot(R_mat,R_mat.T).ravel('F')).reshape(r,r, order='F'))
         int ldp = P.strides[1]/sizeof(dcomplex)
         dcomplex F_mat = 0
         dcomplex Finv = 0

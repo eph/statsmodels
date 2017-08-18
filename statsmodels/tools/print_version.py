@@ -4,12 +4,15 @@ from statsmodels.compat.python import reduce
 import sys
 from os.path import dirname
 
-def safe_version(module, attr='__version__'):
+
+def safe_version(module, attr='__version__', *others):
     if not isinstance(attr, list):
         attr = [attr]
     try:
         return reduce(getattr, [module] + attr)
     except AttributeError:
+        if others:
+            return safe_version(module, others[0], *others[1:])
         return "Cannot detect version"
 
 
@@ -20,15 +23,13 @@ def _show_versions_only():
     try:
         import os
         (sysname, nodename, release, version, machine) = os.uname()
-        print("OS: %s %s %s %s" % (sysname, release, version,machine))
+        print("OS: %s %s %s %s" % (sysname, release, version, machine))
         print("byteorder: %s" % sys.byteorder)
-        print("LC_ALL: %s" % os.environ.get('LC_ALL',"None"))
-        print("LANG: %s" % os.environ.get('LANG',"None"))
+        print("LC_ALL: %s" % os.environ.get('LC_ALL', "None"))
+        print("LANG: %s" % os.environ.get('LANG', "None"))
     except:
         pass
-
     try:
-        import statsmodels
         from statsmodels import version
         has_sm = True
     except ImportError:
@@ -61,7 +62,7 @@ def _show_versions_only():
 
     try:
         import pandas
-        print("pandas: %s" % safe_version(pandas, ['version', 'version']))
+        print("pandas: %s" % safe_version(pandas))
     except ImportError:
         print("pandas: Not installed")
 
@@ -90,6 +91,12 @@ def _show_versions_only():
         print("cvxopt: %s" % safe_version(info, 'version'))
     except ImportError:
         print("cvxopt: Not installed")
+
+    try:
+        import joblib
+        print("joblib: %s " % (safe_version(joblib)))
+    except ImportError:
+        print("joblib: Not installed")
 
     print("\nDeveloper Tools\n================\n")
 
@@ -123,6 +130,12 @@ def _show_versions_only():
         print("nose: Not installed")
 
     try:
+        import pytest
+        print("pytest: %s (%s)" % (safe_version(pytest), dirname(pytest.__file__)))
+    except ImportError:
+        print("pytest: Not installed")
+
+    try:
         import virtualenv
         print("virtualenv: %s" % safe_version(virtualenv))
     except ImportError:
@@ -140,10 +153,10 @@ def show_versions(show_dirs=True):
     try:
         import os
         (sysname, nodename, release, version, machine) = os.uname()
-        print("OS: %s %s %s %s" % (sysname, release, version,machine))
+        print("OS: %s %s %s %s" % (sysname, release, version, machine))
         print("byteorder: %s" % sys.byteorder)
-        print("LC_ALL: %s" % os.environ.get('LC_ALL',"None"))
-        print("LANG: %s" % os.environ.get('LANG',"None"))
+        print("LC_ALL: %s" % os.environ.get('LC_ALL', "None"))
+        print("LANG: %s" % os.environ.get('LANG', "None"))
     except:
         pass
 
@@ -185,8 +198,8 @@ def show_versions(show_dirs=True):
 
     try:
         import pandas
-        print("pandas: %s (%s)" % (safe_version(pandas, ['version',
-                                                         'version']),
+        print("pandas: %s (%s)" % (safe_version(pandas, ['version', 'version'],
+                                                '__version__'),
                                    dirname(pandas.__file__)))
     except ImportError:
         print("pandas: Not installed")
@@ -194,7 +207,7 @@ def show_versions(show_dirs=True):
     try:
         import dateutil
         print("    dateutil: %s (%s)" % (safe_version(dateutil),
-                                     dirname(dateutil.__file__)))
+                                         dirname(dateutil.__file__)))
     except ImportError:
         print("    dateutil: not installed")
 
@@ -211,6 +224,7 @@ def show_versions(show_dirs=True):
         import matplotlib as mpl
         print("matplotlib: %s (%s)" % (safe_version(mpl),
                                        dirname(mpl.__file__)))
+        print("    backend: %s " % mpl.rcParams['backend'])
     except ImportError:
         print("matplotlib: Not installed")
 
@@ -220,6 +234,13 @@ def show_versions(show_dirs=True):
                                    dirname(info.__file__)))
     except ImportError:
         print("cvxopt: Not installed")
+
+    try:
+        import joblib
+        print("joblib: %s (%s)" % (safe_version(joblib),
+                                   dirname(joblib.__file__)))
+    except ImportError:
+        print("joblib: Not installed")
 
     print("\nDeveloper Tools\n================\n")
 
@@ -255,6 +276,12 @@ def show_versions(show_dirs=True):
         print("nose: %s (%s)" % (safe_version(nose), dirname(nose.__file__)))
     except ImportError:
         print("nose: Not installed")
+
+    try:
+        import pytest
+        print("pytest: %s (%s)" % (safe_version(pytest), dirname(pytest.__file__)))
+    except ImportError:
+        print("pytest: Not installed")
 
     try:
         import virtualenv

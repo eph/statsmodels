@@ -165,7 +165,7 @@ Releasing
 
 #. Go back to setup.py and set `isreleased = False` and bump the major version in master.
 
-#. Update the version numbers in the statsmodels/statsmodels-website repo. These are in conf.py. Also upload the released version docs to stable/.
+#. Update the version numbers in the statsmodels/statsmodels-website repo. These are in conf.py. Also upload the released version docs to stable/, move stable/ to a placeholder for older version documentation.
 
 #. Make an announcment
 
@@ -185,8 +185,8 @@ Prefix commit messages in the master branch of the main shared repository with t
     TST: Change to a test, adding a test. Only used if not directly related to a bug.
     REF: Refactoring changes
 
-
-vbench
-------
-
-See :ref:`vbenchdoc` notes for working with the `statsmodels vbench suite <http://statsmodels.sourceforge.net/vbench>`_. The github repository is available `here <https://github.com/statsmodels/vbench>`_.
+.. Notes: vbench is not currently available and it is unclear whether it will return
+.. vbench
+.. ------
+..
+.. See :ref:`vbenchdoc` notes for working with the `statsmodels vbench suite <http://www.statsmodels.org/vbench>`_. The github repository is available `here <https://github.com/statsmodels/vbench>`_.

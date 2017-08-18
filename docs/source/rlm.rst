@@ -13,7 +13,7 @@ See `Module Reference`_ for commands and arguments.
 Examples
 --------
 
-::
+.. ipython:: python
 
     # Load modules and data
     import statsmodels.api as sm
@@ -23,15 +23,12 @@ Examples
     # Fit model and print summary
     rlm_model = sm.RLM(data.endog, data.exog, M=sm.robust.norms.HuberT())
     rlm_results = rlm_model.fit()
-    print rlm_results.params
+    print(rlm_results.params)
 
 Detailed examples can be found here:
 
-.. toctree::
-    :maxdepth: 1
-
-    examples/notebooks/generated/robust_models_0
-    examples/notebooks/generated/robust_models_1
+* `Robust Models 1 <examples/notebooks/generated/robust_models_0.html>`__
+* `Robust Models 2 <examples/notebooks/generated/robust_models_1.html>`__
 
 Technical Documentation
 -----------------------
@@ -51,9 +48,12 @@ References
 Module Reference
 ----------------
 
+.. module:: statsmodels.robust
+
 Model Classes
 ^^^^^^^^^^^^^
 
+.. module:: statsmodels.robust.robust_linear_model
 .. currentmodule:: statsmodels.robust.robust_linear_model
 
 .. autosummary::
@@ -74,6 +74,7 @@ Model Results
 Norms
 ^^^^^
 
+.. module:: statsmodels.robust.norms
 .. currentmodule:: statsmodels.robust.norms
 
 .. autosummary::
@@ -93,6 +94,7 @@ Norms
 Scale
 ^^^^^
 
+.. module:: statsmodels.robust.scale
 .. currentmodule:: statsmodels.robust.scale
 
 .. autosummary::
@@ -101,7 +103,5 @@ Scale
     Huber
     HuberScale
     mad
-    huber
     hubers_scale
-    stand_mad
 

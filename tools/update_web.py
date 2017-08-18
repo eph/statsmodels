@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python
 """
 This script installs the trunk version, builds the docs, then uploads them
 to ...
@@ -132,7 +132,7 @@ def check_version(branch, latest_hash=None):
         remote_dir = 'stable'
         regex = ("(?<=This documentation is for the <b>)(\d{1}\.\d{1}\.\d{1})"
                  "(?=</b> release.)")
-    base_url = 'http://statsmodels.sourceforge.net/{}'
+    base_url = 'http://www.statsmodels.org/{}'
     page = urlopen(base_url.format(remote_dir)).read()
 
     try:
@@ -288,7 +288,7 @@ def upload_docs(branch):
     else:
         remote_dir = 'stable'
     os.chdir(os.path.join(gitdname, 'docs'))
-    retcode = subprocess.call(['rsync', '-avPrzh', '--inplace', '-e ssh',
+    retcode = subprocess.call(['rsync', '-avPzh', '--inplace', '-e ssh',
                                'build/html/', sf_account + ':htdocs/' +
                                remote_dir],
                               stderr=sys.stderr, stdout=sys.stdout)
@@ -306,7 +306,7 @@ def upload_pdf(branch):
     else:
         remote_dir = 'stable'
     os.chdir(os.path.join(dname, new_branch_dir, 'statsmodels','docs'))
-    retcode = subprocess.call(['rsync', '-avPr', '-e ssh',
+    retcode = subprocess.call(['rsync', '-avP', '-e ssh',
                                'build/latex/statsmodels.pdf',
                                sf_account + ':htdocs/' + remote_dir + 'pdf/'])
     if retcode != 0:
