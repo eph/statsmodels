@@ -10,7 +10,6 @@ from warnings import warn
 from statsmodels.compat.collections import OrderedDict
 
 import numpy as np
-import pandas as pd
 from statsmodels.tsa.filters.hp_filter import hpfilter
 from statsmodels.tsa.tsatools import lagmat
 from .mlemodel import MLEModel, MLEResults, MLEResultsWrapper
@@ -294,11 +293,10 @@ class UnobservedComponents(MLEModel):
 
     References
     ----------
-
     .. [1] Durbin, James, and Siem Jan Koopman. 2012.
        Time Series Analysis by State Space Methods: Second Edition.
        Oxford University Press.
-    """
+    """  # noqa:E501
 
     def __init__(self, endog, level=False, trend=False, seasonal=None,
                  cycle=False, autoregressive=None, exog=None, irregular=False,
@@ -672,17 +670,10 @@ class UnobservedComponents(MLEModel):
 
         self.ssm.initialize_known(initial_state, initial_state_cov)
 
-    def filter(self, params, **kwargs):
-        kwargs.setdefault('results_class', UnobservedComponentsResults)
-        kwargs.setdefault('results_wrapper_class',
-                          UnobservedComponentsResultsWrapper)
-        return super(UnobservedComponents, self).filter(params, **kwargs)
-
-    def smooth(self, params, **kwargs):
-        kwargs.setdefault('results_class', UnobservedComponentsResults)
-        kwargs.setdefault('results_wrapper_class',
-                          UnobservedComponentsResultsWrapper)
-        return super(UnobservedComponents, self).smooth(params, **kwargs)
+    @property
+    def _res_classes(self):
+        return {'fit': (UnobservedComponentsResults,
+                        UnobservedComponentsResultsWrapper)}
 
     @property
     def start_params(self):

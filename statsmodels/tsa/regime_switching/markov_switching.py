@@ -42,8 +42,6 @@ prefix_kim_smoother_map = {
 }
 
 
-
-
 def _logistic(x):
     """
     Note that this is not a vectorized function
@@ -982,23 +980,9 @@ class MarkovSwitching(tsbase.TimeSeriesModel):
             self, Bunch(**dict(zip(names, self._filter(params)))))
 
         # Wrap in a results object
-        if not return_raw:
-            result_kwargs = {}
-            if cov_type is not None:
-                result_kwargs['cov_type'] = cov_type
-            if cov_kwds is not None:
-                result_kwargs['cov_kwds'] = cov_kwds
-
-            if results_class is None:
-                results_class = MarkovSwitchingResults
-            if results_wrapper_class is None:
-                results_wrapper_class = MarkovSwitchingResultsWrapper
-
-            result = results_wrapper_class(
-                results_class(self, params, result, **result_kwargs)
-            )
-
-        return result
+        return self._wrap_results(params, result, return_raw, cov_type,
+                                  cov_kwds, results_class,
+                                  results_wrapper_class)
 
     def _smooth(self, params, filtered_marginal_probabilities,
                 predicted_joint_probabilities,
@@ -1011,6 +995,29 @@ class MarkovSwitching(tsbase.TimeSeriesModel):
         return cy_kim_smoother(regime_transition,
                                predicted_joint_probabilities,
                                filtered_joint_probabilities)
+
+    @property
+    def _res_classes(self):
+        return {'fit': (MarkovSwitchingResults, MarkovSwitchingResultsWrapper)}
+
+    def _wrap_results(self, params, result, return_raw, cov_type=None,
+                      cov_kwds=None, results_class=None, wrapper_class=None):
+        if not return_raw:
+            # Wrap in a results object
+            result_kwargs = {}
+            if cov_type is not None:
+                result_kwargs['cov_type'] = cov_type
+            if cov_kwds is not None:
+                result_kwargs['cov_kwds'] = cov_kwds
+
+            if results_class is None:
+                results_class = self._res_classes['fit'][0]
+            if wrapper_class is None:
+                wrapper_class = self._res_classes['fit'][1]
+
+            res = results_class(self, params, result, **result_kwargs)
+            result = wrapper_class(res)
+        return result
 
     def smooth(self, params, transformed=True, cov_type=None, cov_kwds=None,
                return_raw=False, results_class=None,
@@ -1070,23 +1077,9 @@ class MarkovSwitching(tsbase.TimeSeriesModel):
         result = KimSmootherResults(self, result)
 
         # Wrap in a results object
-        if not return_raw:
-            result_kwargs = {}
-            if cov_type is not None:
-                result_kwargs['cov_type'] = cov_type
-            if cov_kwds is not None:
-                result_kwargs['cov_kwds'] = cov_kwds
-
-            if results_class is None:
-                results_class = MarkovSwitchingResults
-            if results_wrapper_class is None:
-                results_wrapper_class = MarkovSwitchingResultsWrapper
-
-            result = results_wrapper_class(
-                results_class(self, params, result, **result_kwargs)
-            )
-
-        return result
+        return self._wrap_results(params, result, return_raw, cov_type,
+                                  cov_kwds, results_class,
+                                  results_wrapper_class)
 
     def loglikeobs(self, params, transformed=True):
         """
@@ -1914,12 +1907,19 @@ class MarkovSwitchingResults(tsbase.TimeSeriesModelResults):
         res.cov_type = cov_type
         res.cov_kwds = {}
 
+        approx_type_str = 'complex-step'
+
         # Calculate the new covariance matrix
         k_params = len(self.params)
         if k_params == 0:
             res.cov_params_default = np.zeros((0, 0))
             res._rank = 0
             res.cov_kwds['description'] = 'No parameters estimated.'
+        elif cov_type == 'custom':
+            res.cov_type = kwargs['custom_cov_type']
+            res.cov_params_default = kwargs['custom_cov_params']
+            res.cov_kwds['description'] = kwargs['custom_description']
+            res._rank = np.linalg.matrix_rank(res.cov_params_default)
         elif cov_type == 'none':
             res.cov_params_default = np.zeros((k_params, k_params)) * np.nan
             res._rank = np.nan
@@ -1927,20 +1927,20 @@ class MarkovSwitchingResults(tsbase.TimeSeriesModelResults):
         elif self.cov_type == 'approx':
             res.cov_params_default = res.cov_params_approx
             res.cov_kwds['description'] = (
-                'Covariance matrix calculated using numerical'
-                ' differentiation.')
+                'Covariance matrix calculated using numerical (%s)'
+                ' differentiation.' % approx_type_str)
         elif self.cov_type == 'opg':
             res.cov_params_default = res.cov_params_opg
             res.cov_kwds['description'] = (
                 'Covariance matrix calculated using the outer product of'
-                ' gradients.'
+                ' gradients (%s).' % approx_type_str
             )
         elif self.cov_type == 'robust':
             res.cov_params_default = res.cov_params_robust
             res.cov_kwds['description'] = (
                 'Quasi-maximum likelihood covariance matrix used for'
                 ' robustness to some misspecifications; calculated using'
-                ' numerical differentiation.')
+                ' numerical (%s) differentiation.' % approx_type_str)
         else:
             raise NotImplementedError('Invalid covariance matrix type.')
 
@@ -2270,4 +2270,5 @@ class MarkovSwitchingResultsWrapper(wrap.ResultsWrapper):
     }
     _wrap_methods = wrap.union_dicts(
         tsbase.TimeSeriesResultsWrapper._wrap_methods, _methods)
-wrap.populate_wrapper(MarkovSwitchingResultsWrapper, MarkovSwitchingResults)
+wrap.populate_wrapper(MarkovSwitchingResultsWrapper,  # noqa:E305
+                      MarkovSwitchingResults)

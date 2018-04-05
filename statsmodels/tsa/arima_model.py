@@ -146,8 +146,7 @@ _predict_returns = """predict : array
 """
 
 _arma_predict = _predict % {"Model" : "ARMA",
-                            "params" : """
-            params : array-like
+                            "params" : """params : array-like
             The fitted parameters of the model.""",
                             "extra_params" : "",
                             "returns" : _predict_returns,
@@ -157,27 +156,23 @@ _arma_results_predict = _predict % {"Model" : "ARMA", "params" : "",
                                     "extra_params" : "",
                                     "returns" : _predict_returns,
                                     "extra_section" : _results_notes}
+_arima_extras = """typ : str {'linear', 'levels'}
+
+            - 'linear' : Linear prediction in terms of the differenced
+              endogenous variables.
+            - 'levels' : Predict the levels of the original endogenous
+              variables.\n"""
 
 _arima_predict = _predict % {"Model" : "ARIMA",
                              "params" : """params : array-like
             The fitted parameters of the model.""",
-                             "extra_params" : """typ : str {'linear', 'levels'}
-
-            - 'linear' : Linear prediction in terms of the differenced
-              endogenous variables.
-            - 'levels' : Predict the levels of the original endogenous
-              variables.\n""", "returns" : _predict_returns,
+                             "extra_params" : _arima_extras,
+                             "returns" : _predict_returns,
                              "extra_section" : _predict_notes}
 
 _arima_results_predict = _predict % {"Model" : "ARIMA",
                                      "params" : "",
-                                     "extra_params" :
-                                     """typ : str {'linear', 'levels'}
-
-            - 'linear' : Linear prediction in terms of the differenced
-              endogenous variables.
-            - 'levels' : Predict the levels of the original endogenous
-              variables.\n""",
+                                     "extra_params" :_arima_extras,
                                      "returns" : _predict_returns,
                                      "extra_section" : _results_notes}
 
@@ -199,16 +194,18 @@ _arima_plot_predict_example = """        Examples
         .. plot:: plots/arma_predict_plot.py
 """
 
-_plot_predict = ("""
-        Plot forecasts
-                      """ + '\n'.join(_predict.split('\n')[2:])) % {
-                      "params" : "",
-                          "extra_params" : """alpha : float, optional
+_plot_extras = """alpha : float, optional
             The confidence intervals for the forecasts are (1 - alpha)%
         plot_insample : bool, optional
             Whether to plot the in-sample series. Default is True.
         ax : matplotlib.Axes, optional
-            Existing axes to plot with.""",
+            Existing axes to plot with."""
+
+_plot_predict = ("""
+        Plot forecasts
+                      """ + '\n'.join(_predict.split('\n')[2:])) % {
+                      "params" : "",
+                          "extra_params" : _plot_extras,
                       "returns" : """fig : matplotlib.Figure
             The plotted Figure instance""",
                       "extra_section" : ('\n' + _arima_plot_predict_example +
@@ -218,16 +215,11 @@ _plot_predict = ("""
 _arima_plot_predict = ("""
         Plot forecasts
                       """ + '\n'.join(_predict.split('\n')[2:])) % {
-                      "params" : "",
-                          "extra_params" : """alpha : float, optional
-            The confidence intervals for the forecasts are (1 - alpha)%
-        plot_insample : bool, optional
-            Whether to plot the in-sample series. Default is True.
-        ax : matplotlib.Axes, optional
-            Existing axes to plot with.""",
-                      "returns" : """fig : matplotlib.Figure
+    "params" : "",
+    "extra_params" : _plot_extras,
+    "returns" : """fig : matplotlib.Figure
             The plotted Figure instance""",
-                "extra_section" : ('\n' + _arima_plot_predict_example +
+    "extra_section" : ('\n' + _arima_plot_predict_example +
                                    '\n' +
                                    '\n'.join(_results_notes.split('\n')[:3]) +
                               ("""
@@ -398,10 +390,13 @@ def _make_arma_names(data, k_trend, order, exog_names):
 
     # ensure exog_names stays unchanged when the `fit` method
     # is called multiple times.
-    if exog_names[-k_ma:] == ma_lag_names and \
-       exog_names[-(k_ar+k_ma):-k_ma] == ar_lag_names and \
-       (not exog_names or not trend_name or trend_name[0] == exog_names[0]):
-        return exog_names
+    if k_ma ==0 and k_ar ==0:
+        if len(exog_names) != 0:
+          return exog_names
+    elif  (exog_names[-k_ma:] == ma_lag_names ) and \
+           exog_names[-(k_ar+k_ma):-k_ma] == ar_lag_names and \
+           (not exog_names or not trend_name or trend_name[0] == exog_names[0]):
+           return exog_names
 
     exog_names = trend_name + exog_names + ar_lag_names + ma_lag_names
     return exog_names
@@ -571,7 +566,9 @@ class ARMA(tsbase.TimeSeriesModel):
                                             approx_grad=True, m=12,
                                             pgtol=1e-7, factr=1e3,
                                             bounds=bounds, iprint=-1)
-            start_params = self._transparams(mlefit[0])
+            start_params = mlefit[0]
+            if self.transparams:
+                start_params = self._transparams(start_params)
         return start_params
 
     def score(self, params):
@@ -818,7 +815,7 @@ class ARMA(tsbase.TimeSeriesModel):
         return llf
 
     def fit(self, start_params=None, trend='c', method="css-mle",
-            transparams=True, solver='lbfgs', maxiter=50, full_output=1,
+            transparams=True, solver='lbfgs', maxiter=500, full_output=1,
             disp=5, callback=None, start_ar_lags=None, **kwargs):
         """
         Fits ARMA(p,q) model using exact maximum likelihood via Kalman filter.
@@ -853,7 +850,7 @@ class ARMA(tsbase.TimeSeriesModel):
             approximate the Hessian, projected gradient tolerance of 1e-8 and
             factr = 1e2. You can change these by using kwargs.
         maxiter : int, optional
-            The maximum number of function evaluations. Default is 50.
+            The maximum number of function evaluations. Default is 500.
         tol : float
             The convergence tolerance.  Default is 1e-08.
         full_output : bool, optional
@@ -968,6 +965,12 @@ class ARMA(tsbase.TimeSeriesModel):
         armafit.mle_settings = mlefit.mle_settings
         return ARMAResultsWrapper(armafit)
 
+    # base class of "from_formula" is "class Model(object)"
+    @classmethod
+    def from_formula(cls, formula, data, subset=None, drop_cols=None, *args, **kwargs):
+        raise NotImplementedError("from_formula is not supported"
+                                  " for ARMA models.")
+
 
 #NOTE: the length of endog changes when we give a difference to fit
 #so model methods are not the same on unfit models as fit ones
@@ -1066,7 +1069,7 @@ class ARIMA(ARMA):
         return start, end, out_of_sample, prediction_index
 
     def fit(self, start_params=None, trend='c', method="css-mle",
-            transparams=True, solver='lbfgs', maxiter=50, full_output=1,
+            transparams=True, solver='lbfgs', maxiter=500, full_output=1,
             disp=5, callback=None, start_ar_lags=None, **kwargs):
         """
         Fits ARIMA(p,d,q) model by exact maximum likelihood via Kalman filter.
@@ -1101,7 +1104,7 @@ class ARIMA(ARMA):
             approximate the Hessian, projected gradient tolerance of 1e-8 and
             factr = 1e2. You can change these by using kwargs.
         maxiter : int, optional
-            The maximum number of function evaluations. Default is 50.
+            The maximum number of function evaluations. Default is 500.
         tol : float
             The convergence tolerance.  Default is 1e-08.
         full_output : bool, optional

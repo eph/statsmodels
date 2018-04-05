@@ -1,7 +1,9 @@
+# -*- coding: utf-8 -*-
 """
 Test VAR Model
 """
 from __future__ import print_function
+import warnings
 # pylint: disable=W0612,W0231
 from statsmodels.compat.python import (iteritems, StringIO, lrange, BytesIO,
                                        range)
@@ -17,6 +19,7 @@ import statsmodels.api as sm
 import statsmodels.tsa.vector_ar.util as util
 import statsmodels.tools.data as data_util
 from statsmodels.tsa.vector_ar.var_model import VAR
+from statsmodels.tools.sm_exceptions import ValueWarning
 
 
 from numpy.testing import (assert_almost_equal, assert_equal, assert_,
@@ -448,6 +451,7 @@ class TestVARResults(CheckIRF, CheckFEVD):
     def test_pickle(self):
         fh = BytesIO()
         #test wrapped results load save pickle
+        del self.res.model.data.orig_endog
         self.res.save(fh)
         fh.seek(0,0)
         res_unpickled = self.res.__class__.load(fh)
@@ -456,7 +460,7 @@ class TestVARResults(CheckIRF, CheckFEVD):
 
 class E1_Results(object):
     """
-    Results from Lutkepohl (2005) using E2 dataset
+    Results from Lütkepohl (2005) using E2 dataset
     """
 
     def __init__(self):
@@ -510,7 +514,7 @@ def test_lutkepohl_parse():
 
 class TestVARResultsLutkepohl(object):
     """
-    Verify calculations using results from Lutkepohl's book
+    Verify calculations using results from Lütkepohl's book
     """
 
     @classmethod
@@ -582,7 +586,10 @@ def test_var_constant():
 
     data.index = DatetimeIndex(index)
 
-    model = VAR(data)
+    #with pytest.warns(ValueWarning):  #does not silence warning in test output
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=ValueWarning)
+        model = VAR(data)
     with pytest.raises(ValueError):
         model.fit(1)
 

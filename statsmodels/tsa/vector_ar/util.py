@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 Miscellaneous utility code for VAR estimation
 """
@@ -8,6 +9,7 @@ from statsmodels.compat.pandas import frequencies
 import numpy as np
 import scipy.stats as stats
 import scipy.linalg.decomp as decomp
+import pandas as pd
 
 import statsmodels.tsa.tsatools as tsa
 
@@ -20,7 +22,7 @@ def get_var_endog(y, lags, trend='c', has_constant='skip'):
     Z := (Z_0, ..., Z_T).T (T x Kp)
     Z_t = [1 y_t y_{t-1} ... y_{t - p + 1}] (Kp x 1)
 
-    Ref: Lutkepohl p.70 (transposed)
+    Ref: Lütkepohl p.70 (transposed)
 
     has_constant can be 'raise', 'add', or 'skip'. See add_constant.
     """
@@ -107,9 +109,10 @@ def comp_matrix(coefs):
 #-------------------------------------------------------------------------------
 # Miscellaneous stuff
 
+
 def parse_lutkepohl_data(path): # pragma: no cover
     """
-    Parse data files from Lutkepohl (2005) book
+    Parse data files from Lütkepohl (2005) book
 
     Source for data files: www.jmulti.de
     """
@@ -136,7 +139,8 @@ def parse_lutkepohl_data(path): # pragma: no cover
             year, freq, start_point = m.groups()
             break
 
-    data = np.genfromtxt(path, names=True, skip_header=to_skip+1)
+    data = (pd.read_csv(path, delimiter=r"\s+", header=to_skip+1)
+            .to_records(index=False))
 
     n = len(data)
 

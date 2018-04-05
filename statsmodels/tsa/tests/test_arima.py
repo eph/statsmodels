@@ -3,10 +3,11 @@ from statsmodels.compat.testing import skip, skipif
 
 import os
 import warnings
+from distutils.version import LooseVersion
 
 import numpy as np
 from numpy.testing import (assert_almost_equal, assert_, assert_allclose,
-                           assert_raises, dec)
+                           assert_raises)
 import pandas as pd
 from pandas import PeriodIndex, DatetimeIndex
 import pytest
@@ -21,6 +22,9 @@ from statsmodels.regression.linear_model import OLS
 from statsmodels.tsa.tests.results import results_arma, results_arima
 from statsmodels.tsa.arima_process import arma_generate_sample
 
+import scipy  # only needed for version check
+scipy_old = LooseVersion(scipy.__version__) < '0.16'
+
 try:
     import matplotlib.pyplot as plt
     have_matplotlib = True
@@ -33,8 +37,9 @@ DECIMAL_2 = 2
 DECIMAL_1 = 1
 
 current_path = os.path.dirname(os.path.abspath(__file__))
-y_arma = np.genfromtxt(open(current_path + '/results/y_arma_data.csv', "rb"),
-        delimiter=",", skip_header=1, dtype=float)
+ydata_path = os.path.join(current_path, 'results', 'y_arma_data.csv')
+with open(ydata_path, "rb") as fd:
+    y_arma = np.genfromtxt(fd, delimiter=",", skip_header=1, dtype=float)
 
 cpi_dates = PeriodIndex(start='1959q1', end='2009q3', freq='Q')
 sun_dates = PeriodIndex(start='1700', end='2008', freq='A')
@@ -217,7 +222,7 @@ class Test_Y_ARMA14_NoConst(CheckArmaResultsMixin):
         cls.res2 = results_arma.Y_arma14()
 
 
-@dec.slow
+@pytest.mark.slow
 class Test_Y_ARMA41_NoConst(CheckArmaResultsMixin, CheckForecastMixin):
     @classmethod
     def setup_class(cls):
@@ -470,7 +475,7 @@ def test_reset_trend():
     assert_equal(len(res1.params), len(res2.params)+1)
 
 
-@dec.slow
+@pytest.mark.slow
 def test_start_params_bug():
     data = np.array([1368., 1187, 1090, 1439, 2362, 2783, 2869, 2512, 1804,
     1544, 1028, 869, 1737, 2055, 1947, 1618, 1196, 867, 997, 1862, 2525,
@@ -534,7 +539,7 @@ def test_start_params_bug():
     1600, 1876, 1885, 1962, 2280, 2711, 2591, 2411])
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        res = ARMA(data, order=(4,1)).fit(disp=-1)
+        res = ARMA(data, order=(4,1)).fit(start_ar_lags=5, disp=-1)
 
 
 class Test_ARIMA101(CheckArmaResultsMixin):
@@ -1590,7 +1595,6 @@ def test_arima_predict_bug():
     from statsmodels.datasets import sunspots
     dta = sunspots.load_pandas().data.SUNACTIVITY
     dta.index = pd.DatetimeIndex(start='1700', end='2009', freq='A')[:309]
-    print(dta.index)
     arma_mod20 = ARMA(dta, (2,0)).fit(disp=-1)
     arma_mod20.predict(None, None)
 
@@ -2055,7 +2059,7 @@ def test_arima_diff2():
                      229.457]
     assert_almost_equal(predicted, predicted_res, 3)
 
-
+@skipif(scipy_old, reason='scipy is old, test might fail')
 def test_arima111_predict_exog_2127():
     # regression test for issue #2127
     ef =  [ 0.03005,  0.03917,  0.02828,  0.03644,  0.03379,  0.02744,
@@ -2092,8 +2096,8 @@ def test_arima111_predict_exog_2127():
     # rescaling results in convergence failure
     #model = sm.tsa.ARIMA(np.array(ef)*100, (1,1,1), exog=ue)
     model = ARIMA(ef, (1,1,1), exog=ue)
-    res = model.fit(transparams=False, iprint=0, disp=0)
-
+    res = model.fit(transparams=False, pgtol=1e-8, iprint=0, disp=0)
+    assert_equal(res.mle_retvals['warnflag'],  0)
     predicts = res.predict(start=len(ef), end = len(ef)+10,
                            exog=ue[-11:], typ = 'levels')
 
@@ -2110,7 +2114,7 @@ def test_arima111_predict_exog_2127():
             0.02372018,  0.02374833,  0.02367407,  0.0236443 ,  0.02362868,
             0.02362312])
 
-    assert_allclose(predicts, predicts_res, atol=1e-6)
+    assert_allclose(predicts, predicts_res, atol=5e-6)
 
 
 def test_ARIMA_exog_predict():
@@ -2234,8 +2238,24 @@ def test_arima_fit_mutliple_calls():
         mod.fit(disp=0, start_params=[np.mean(y), .1, .1, .1])
     assert_equal(mod.exog_names,  ['const', 'ar.L1.y', 'ma.L1.y', 'ma.L2.y'])
     with warnings.catch_warnings(record=True) as w:
-        mod.fit(disp=0, start_params=[np.mean(y), .1, .1, .1])
+        res= mod.fit(disp=0, start_params=[np.mean(y), .1, .1, .1])
     assert_equal(mod.exog_names,  ['const', 'ar.L1.y', 'ma.L1.y', 'ma.L2.y'])
+
+    #ensure summary() works
+    res.summary()
+
+    #test multiple calls when there is only a constant term
+    mod = ARIMA(y, (0, 0, 0))
+    # Make multiple calls to fit
+    with warnings.catch_warnings(record=True) as w:
+        mod.fit(disp=0, start_params=[np.mean(y)])
+    assert_equal(mod.exog_names,  ['const'])
+    with warnings.catch_warnings(record=True) as w:
+        res = mod.fit(disp=0, start_params=[np.mean(y)])
+    assert_equal(mod.exog_names,  ['const'])
+
+    # ensure summary() works
+    res.summary()
 
 def test_long_ar_start_params():
     np.random.seed(12345)
@@ -2284,6 +2304,12 @@ def test_arima_pickle():
     assert_almost_equal(res.resid, pkl_res.resid)
     assert_almost_equal(res.fittedvalues, pkl_res.fittedvalues)
     assert_almost_equal(res.pvalues, pkl_res.pvalues)
+
+
+def test_arima_not_implemented():
+    formula = ' WUE ~ 1 + SFO3 '
+    data = [-1214.360173, -1848.209905, -2100.918158]
+    assert_raises(NotImplementedError, ARIMA.from_formula, formula, data)
 
 
 if __name__ == "__main__":

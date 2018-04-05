@@ -187,15 +187,15 @@ def adfuller(x, maxlag=None, regression="c", autolag='AIC',
 
     References
     ----------
-    .. [1] W. Green.  "Econometric Analysis," 5th ed., Pearson, 2003.
+    .. [*] W. Green.  "Econometric Analysis," 5th ed., Pearson, 2003.
 
-    .. [2] Hamilton, J.D.  "Time Series Analysis".  Princeton, 1994.
+    .. [*] Hamilton, J.D.  "Time Series Analysis".  Princeton, 1994.
 
-    .. [3] MacKinnon, J.G. 1994.  "Approximate asymptotic distribution functions for
+    .. [*] MacKinnon, J.G. 1994.  "Approximate asymptotic distribution functions for
         unit-root and cointegration tests.  `Journal of Business and Economic
         Statistics` 12, 167-76.
 
-    .. [4] MacKinnon, J.G. 2010. "Critical Values for Cointegration Tests."  Queen's
+    .. [*] MacKinnon, J.G. 2010. "Critical Values for Cointegration Tests."  Queen's
         University, Dept of Economics, Working Papers.  Available at
         http://ideas.repec.org/p/qed/wpaper/1227.html
     """
@@ -319,7 +319,7 @@ def acovf(x, unbiased=False, demean=True, fft=False, missing='none'):
 
     References
     -----------
-    .. [1] Parzen, E., 1963. On spectral analysis with missing observations
+    .. [*] Parzen, E., 1963. On spectral analysis with missing observations
            and amplitude modulation. Sankhya: The Indian Journal of
            Statistics, Series A, pp.383-392.
     """
@@ -465,7 +465,7 @@ def acf(x, unbiased=False, nlags=40, qstat=False, fft=False, alpha=None,
 
     References
     ----------
-    .. [1] Parzen, E., 1963. On spectral analysis with missing observations
+    .. [*] Parzen, E., 1963. On spectral analysis with missing observations
        and amplitude modulation. Sankhya: The Indian Journal of
        Statistics, Series A, pp.383-392.
 
@@ -557,7 +557,8 @@ def pacf_ols(x, nlags=40):
 
 
 def pacf(x, nlags=40, method='ywunbiased', alpha=None):
-    '''Partial autocorrelation estimated
+    """
+    Partial autocorrelation estimated
 
     Parameters
     ----------
@@ -565,17 +566,16 @@ def pacf(x, nlags=40, method='ywunbiased', alpha=None):
         observations of time series for which pacf is calculated
     nlags : int
         largest lag for which pacf is returned
-    method : 'ywunbiased' (default) or 'ywmle' or 'ols'
+    method : {'ywunbiased', 'ywmle', 'ols'}
         specifies which method for the calculations to use:
 
         - yw or ywunbiased : yule walker with bias correction in denominator
-          for acovf
+          for acovf. Default.
         - ywm or ywmle : yule walker without bias correction
         - ols - regression of time series on lags of it and on constant
         - ld or ldunbiased : Levinson-Durbin recursion with bias correction
         - ldb or ldbiased : Levinson-Durbin recursion without bias correction
-
-    alpha : scalar, optional
+    alpha : float, optional
         If a number is given, the confidence intervals for the given level are
         returned. For instance if alpha=.05, 95 % confidence intervals are
         returned where the standard deviation is computed according to
@@ -592,7 +592,7 @@ def pacf(x, nlags=40, method='ywunbiased', alpha=None):
     -----
     This solves yule_walker equations or ols for each desired lag
     and contains currently duplicate calculations.
-    '''
+    """
 
     if method == 'ols':
         ret = pacf_ols(x, nlags=nlags)
